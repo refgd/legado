@@ -10,10 +10,8 @@ import com.bumptech.glide.load.model.MultiModelLoaderFactory
 import com.bumptech.glide.signature.ObjectKey
 import io.legado.app.exception.NoStackTraceException
 import io.legado.app.model.ReadManga
-import io.legado.app.model.analyzeRule.AnalyzeUrl
+import io.legado.app.model.webBook.RustAnalyzerBridge
 import io.legado.app.utils.ImageUtils
-import com.script.rhino.runScriptWithContext
-import kotlinx.coroutines.Job
 import java.io.InputStream
 
 class LegadoDataUrlLoader : ModelLoader<String, InputStream> {
@@ -24,7 +22,7 @@ class LegadoDataUrlLoader : ModelLoader<String, InputStream> {
         height: Int,
         options: Options
     ): ModelLoader.LoadData<InputStream>? {
-        if (options.get(OkHttpModelLoader.mangaOption) == false) {
+        if (options.get(RustImageModelLoader.mangaOption) == false) {
             return null
         }
         return ModelLoader.LoadData(ObjectKey(model), LegadoDataUrlFetcher(model))
@@ -36,22 +34,17 @@ class LegadoDataUrlLoader : ModelLoader<String, InputStream> {
 
     class LegadoDataUrlFetcher(private val model: String) : DataFetcher<InputStream> {
 
-        private val coroutineContext = Job()
-
         override fun loadData(
             priority: Priority,
             callback: DataFetcher.DataCallback<in InputStream>
         ) {
             try {
-                val bytes = AnalyzeUrl(
-                    model, source = ReadManga.bookSource,
-                    coroutineContext = coroutineContext
-                ).getByteArray()
-                val decoded = runScriptWithContext(coroutineContext) {
-                    ImageUtils.decode(
-                        model, bytes, isCover = false, ReadManga.bookSource, ReadManga.book
-                    )?.inputStream()
-                }
+                val source = ReadManga.bookSource
+                    ?: throw NoStackTraceException("Rust data image fetch requires a manga source")
+                val bytes = RustAnalyzerBridge.fetchRaw(source, model, "LegadoDataUrlLoader.dataImage")
+                val decoded = ImageUtils.decode(
+                    model, bytes, isCover = false, source, ReadManga.book
+                )?.inputStream()
                 if (decoded == null) {
                     throw NoStackTraceException("漫画图片解密失败")
                 }
@@ -66,7 +59,7 @@ class LegadoDataUrlLoader : ModelLoader<String, InputStream> {
         }
 
         override fun cancel() {
-            coroutineContext.cancel()
+            // Rust raw fetch is synchronous for this Glide data path.
         }
 
         override fun getDataClass(): Class<InputStream> {

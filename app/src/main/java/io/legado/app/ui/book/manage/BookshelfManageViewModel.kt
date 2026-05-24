@@ -9,6 +9,7 @@ import io.legado.app.constant.BookType
 import io.legado.app.data.appDb
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookSource
+import io.legado.app.exception.NoStackTraceException
 import io.legado.app.help.book.BookHelp
 import io.legado.app.help.book.isLocal
 import io.legado.app.help.book.removeType
@@ -16,6 +17,7 @@ import io.legado.app.help.config.AppConfig
 import io.legado.app.help.coroutine.Coroutine
 import io.legado.app.model.localBook.LocalBook
 import io.legado.app.model.webBook.WebBook
+import io.legado.app.model.webBook.isRustNetworkAccessError
 import io.legado.app.model.SourceCallBack
 import io.legado.app.utils.FileUtils
 import io.legado.app.utils.GSON
@@ -97,26 +99,42 @@ class BookshelfManageViewModel(application: Application) : BaseViewModel(applica
                 if (book.isLocal) return@forEachIndexed
                 if (book.origin == source.bookSourceUrl) return@forEachIndexed
                 val newBook = WebBook.preciseSearchAwait(source, book.name, book.author)
-                    .onFailure {
-                        AppLog.put("搜索书籍出错\n${it.localizedMessage}", it, true)
-                    }.getOrNull() ?: return@forEachIndexed
+                    .getOrElse {
+                        if (it.isRustNetworkAccessError()) {
+                            AppLog.put("BookshelfManage batch search network load failed for ${book.name}\n${it.localizedMessage}", it)
+                            return@forEachIndexed
+                        }
+                        throw NoStackTraceException(
+                            "BookshelfManage batch change source Rust search failed for ${book.name} in ${source.getTag()}: ${it.localizedMessage ?: it}"
+                        )
+                    }
                 kotlin.runCatching {
                     if (newBook.tocUrl.isEmpty()) {
                         WebBook.getBookInfoAwait(source, newBook)
                     }
                 }.onFailure {
-                    AppLog.put("获取书籍详情出错\n${it.localizedMessage}", it, true)
-                    return@forEachIndexed
-                }
-                WebBook.getChapterListAwait(source, newBook)
-                    .onFailure {
-                        AppLog.put("获取目录出错\n${it.localizedMessage}", it, true)
-                    }.getOrNull()?.let { toc ->
-                        book.migrateTo(newBook, toc)
-                        book.removeType(BookType.updateError)
-                        appDb.bookDao.insert(newBook)
-                        appDb.bookChapterDao.insert(*toc.toTypedArray())
+                    if (it.isRustNetworkAccessError()) {
+                        AppLog.put("BookshelfManage batch detail network load failed for ${newBook.name}\n${it.localizedMessage}", it)
+                        return@forEachIndexed
                     }
+                    throw NoStackTraceException(
+                        "BookshelfManage batch change source Rust detail failed for ${newBook.name} in ${source.getTag()}: ${it.localizedMessage ?: it}"
+                    )
+                }
+                val toc = WebBook.getChapterListAwait(source, newBook)
+                    .getOrElse {
+                        if (it.isRustNetworkAccessError()) {
+                            AppLog.put("BookshelfManage batch toc network load failed for ${newBook.name}\n${it.localizedMessage}", it)
+                            return@forEachIndexed
+                        }
+                        throw NoStackTraceException(
+                            "BookshelfManage batch change source Rust toc failed for ${newBook.name} in ${source.getTag()}: ${it.localizedMessage ?: it}"
+                        )
+                    }
+                book.migrateTo(newBook, toc)
+                book.removeType(BookType.updateError)
+                appDb.bookDao.insert(newBook)
+                appDb.bookChapterDao.insert(*toc.toTypedArray())
                 delay(changeSourceDelay)
             }
         }.onStart {

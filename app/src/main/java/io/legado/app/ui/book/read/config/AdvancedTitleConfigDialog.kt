@@ -26,8 +26,6 @@ import io.legado.app.R
 import io.legado.app.constant.EventBus
 import io.legado.app.data.entities.Book
 import io.legado.app.help.config.AdvancedTitleConfig
-import io.legado.app.help.http.newCallResponseBody
-import io.legado.app.help.http.okHttpClient
 import io.legado.app.lib.dialogs.SelectItem
 import io.legado.app.lib.dialogs.alert
 import io.legado.app.lib.theme.applyUiInputStyle
@@ -43,6 +41,7 @@ import io.legado.app.ui.file.HandleFileContract
 import io.legado.app.utils.dpToPx
 import io.legado.app.utils.postEvent
 import io.legado.app.utils.readText
+import io.legado.app.utils.RustRemoteFetch
 import io.legado.app.utils.sendToClip
 import io.legado.app.utils.toastOnUi
 import kotlinx.coroutines.Dispatchers
@@ -398,11 +397,7 @@ class AdvancedTitleConfigDialog : DialogFragment() {
         lifecycleScope.launch {
             runCatching {
                 withContext(Dispatchers.IO) {
-                    okHttpClient.newCallResponseBody {
-                        url(url)
-                    }.use { body ->
-                        body.string()
-                    }
+                    RustRemoteFetch.text(url, "AdvancedTitleConfigDialog.importNetJson")
                 }
             }.onSuccess { text ->
                 currentJson = text

@@ -4,6 +4,7 @@ import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.PrimaryKey
 import com.jayway.jsonpath.DocumentContext
+import io.legado.app.exception.NoStackTraceException
 import io.legado.app.utils.GSON
 import io.legado.app.utils.jsonPath
 import io.legado.app.utils.readLong
@@ -61,8 +62,10 @@ data class HttpTTS(
                 val loginUi = doc.read<Any>("$.loginUi")
                 HttpTTS(
                     id = doc.readLong("$.id") ?: System.currentTimeMillis(),
-                    name = doc.readString("$.name")!!,
-                    url = doc.readString("$.url")!!,
+                    name = doc.readString("$.name")
+                        ?: throw NoStackTraceException("HttpTTS JSON missing name for Rust analyzer handoff"),
+                    url = doc.readString("$.url")
+                        ?: throw NoStackTraceException("HttpTTS JSON missing url for Rust analyzer handoff"),
                     contentType = doc.readString("$.contentType"),
                     concurrentRate = doc.readString("$.concurrentRate"),
                     loginUrl = doc.readString("$.loginUrl"),

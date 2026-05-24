@@ -25,8 +25,10 @@ import io.legado.app.data.entities.BookChapter
 import io.legado.app.data.entities.BookSource
 import io.legado.app.data.entities.SearchBook
 import io.legado.app.databinding.DialogChapterChangeSourceBinding
+import io.legado.app.exception.NoStackTraceException
 import io.legado.app.help.book.BookHelp
 import io.legado.app.help.config.AppConfig
+import io.legado.app.model.webBook.isRustNetworkAccessError
 import io.legado.app.lib.dialogs.alert
 import io.legado.app.lib.theme.applyUiSearchTypeface
 import io.legado.app.lib.theme.elevation
@@ -320,7 +322,14 @@ class ChangeChapterSourceDialog() : BaseDialogFragment(R.layout.dialog_chapter_c
             binding.recyclerViewToc.scrollToPosition(tocAdapter.durChapterIndex - 5)
         }, {
             binding.clToc.gone()
-            AppLog.put("单章换源获取目录出错\n$it", it, true)
+            if (it.isRustNetworkAccessError()) {
+                AppLog.put("ChangeChapterSourceDialog toc network load failed for ${book.name}\n${it.localizedMessage}", it)
+                toastOnUi(it.localizedMessage ?: getString(R.string.unknown_error))
+            } else {
+                throw NoStackTraceException(
+                    "ChangeChapterSourceDialog Rust toc failed for ${book.name}: ${it.localizedMessage ?: it}"
+                )
+            }
         })
     }
 

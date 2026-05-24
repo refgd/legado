@@ -1,13 +1,11 @@
 package io.legado.app.utils
 
-import com.script.ScriptBindings
-import com.script.rhino.RhinoScriptEngine
 import io.legado.app.data.entities.BookChapter
 import io.legado.app.data.entities.ReplaceBook
 import io.legado.app.exception.RegexTimeoutException
 import io.legado.app.help.CrashHandler
-import io.legado.app.help.RegexJsExtensions
 import io.legado.app.help.coroutine.Coroutine
+import io.legado.app.model.webBook.RustAnalyzerBridge
 import kotlinx.coroutines.Dispatchers.IO
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.launch
@@ -36,7 +34,6 @@ fun CharSequence.replace(
     val charSequence = this@replace
     val isJs = replacement.startsWith("@js:")
     val replacement1 = if (isJs) replacement.substring(4) else replacement
-    val reJsExtensions by lazy { RegexJsExtensions(name) }
     return runBlocking {
         suspendCancellableCoroutine { block ->
             Coroutine.async(executeContext = IO) {
@@ -47,14 +44,12 @@ fun CharSequence.replace(
                         val stringBuffer = StringBuffer()
                         while (matcher.find()) {
                             if (isJs) {
-                                val jsResult = RhinoScriptEngine.run {
-                                    val bindings = ScriptBindings()
-                                    bindings["result"] = matcher.group()
-                                    bindings["chapter"] = chapter
-                                    bindings["book"] = book
-                                    bindings["java"] = reJsExtensions
-                                    eval(replacement1, bindings)
-                                }.toString()
+                                val jsResult = RustAnalyzerBridge.evalJsRaw(
+                                    script = replacement1,
+                                    result = matcher.group(),
+                                    rulePath = "RegexExtensions.replace",
+                                    bindingsJson = regexBindingsJson(book, chapter)
+                                )
                                 val quotedResult = jsResult.quoteReplacementJs()
                                 matcher.appendReplacement(stringBuffer, quotedResult)
                             } else {
@@ -87,4 +82,11 @@ fun CharSequence.replace(
             }
         }
     }
+}
+
+private fun regexBindingsJson(book: ReplaceBook?, chapter: BookChapter?): String {
+    val bindings = linkedMapOf<String, Any?>()
+    if (book != null) bindings["book"] = book
+    if (chapter != null) bindings["chapter"] = chapter
+    return if (bindings.isEmpty()) "" else GSON.toJson(bindings)
 }

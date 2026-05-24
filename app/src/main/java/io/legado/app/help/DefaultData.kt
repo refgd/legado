@@ -48,9 +48,7 @@ object DefaultData {
                 appCtx.assets.open("defaultData${File.separator}httpTTS.json")
                     .readBytes()
             )
-        HttpTTS.fromJsonArray(json).getOrElse {
-            emptyList()
-        }
+        HttpTTS.fromJsonArray(json).getOrThrow()
     }
 
     val readConfigs: List<ReadBookConfig.Config> by lazy {
@@ -58,8 +56,7 @@ object DefaultData {
             appCtx.assets.open("defaultData${File.separator}${ReadBookConfig.configFileName}")
                 .readBytes()
         )
-        GSON.fromJsonArray<ReadBookConfig.Config>(json).getOrNull()
-            ?: emptyList()
+        GSON.fromJsonArray<ReadBookConfig.Config>(json).getOrThrow()
     }
 
     val txtTocRules: List<TxtTocRule> by lazy {
@@ -67,7 +64,7 @@ object DefaultData {
             appCtx.assets.open("defaultData${File.separator}txtTocRule.json")
                 .readBytes()
         )
-        GSON.fromJsonArray<TxtTocRule>(json).getOrNull() ?: emptyList()
+        GSON.fromJsonArray<TxtTocRule>(json).getOrThrow()
     }
 
     val themeConfigs: List<ThemeConfig.Config> by lazy {
@@ -75,7 +72,7 @@ object DefaultData {
             appCtx.assets.open("defaultData${File.separator}${ThemeConfig.configFileName}")
                 .readBytes()
         )
-        GSON.fromJsonArray<ThemeConfig.Config>(json).getOrNull() ?: emptyList()
+        GSON.fromJsonArray<ThemeConfig.Config>(json).getOrThrow()
     }
 
     val rssSources: List<RssSource> by lazy {
@@ -83,7 +80,7 @@ object DefaultData {
             appCtx.assets.open("defaultData${File.separator}rssSources.json")
                 .readBytes()
         )
-        GSON.fromJsonArray<RssSource>(json).getOrDefault(emptyList())
+        GSON.fromJsonArray<RssSource>(json).getOrThrow()
     }
 
     val coverRule: BookCover.CoverRule by lazy {

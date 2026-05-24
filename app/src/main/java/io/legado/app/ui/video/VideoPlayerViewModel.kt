@@ -3,10 +3,11 @@ package io.legado.app.ui.video
 import android.app.Application
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.MutableLiveData
-import com.script.rhino.runScriptWithContext
 import io.legado.app.base.BaseViewModel
 import io.legado.app.constant.AppLog
 import io.legado.app.data.appDb
+import io.legado.app.data.entities.BaseSource
+import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookSource
 import io.legado.app.data.entities.RssSource
 import io.legado.app.model.VideoPlay
@@ -80,16 +81,23 @@ class VideoPlayerViewModel(application: Application) : BaseViewModel(application
         val book = VideoPlay.book ?: return
         execute {
             val java = SourceLoginJsExtensions(activity, source)
-            runScriptWithContext {
-                source.evalJS(click) {
-                    put("result", null)
-                    put("java", java)
-                    put("book", book)
-                }
-            }
+            evalVideoButtonClickByRust(source, book, java, click)
         }.onError {
             AppLog.put("${source.getTag()}: ${it.localizedMessage}", it)
             context.toastOnUi("$name click error\n${it.localizedMessage}")
         }
+    }
+}
+
+fun evalVideoButtonClickByRust(
+    source: BaseSource,
+    book: Book,
+    java: SourceLoginJsExtensions,
+    click: String
+) {
+    source.evalJS(click) {
+        put("result", null)
+        put("java", java)
+        put("book", book)
     }
 }

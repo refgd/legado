@@ -1,16 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <!--App-->
-    <string name="app_name">阅读R</string>
-    <string name="app_name_a">阅读R·A</string>
-    <string name="app_name_s" translatable="false">阅读R Plus</string>
-    <string name="receiving_shared_label">阅读R·搜索</string>
-    <string name="tip_perm_request_storage">阅读R needs storage access to find and read books. please go "App Settings" to allow "Storage permission".</string>
+    <string name="app_name">阅读RU</string>
+    <string name="app_name_a">阅读RU·A</string>
+    <string name="app_name_s" translatable="false">阅读RU Plus</string>
+    <string name="receiving_shared_label">阅读RU·搜索</string>
+    <string name="tip_perm_request_storage">阅读RU needs storage access to find and read books. please go "App Settings" to allow "Storage permission".</string>
 
     <!--Other-->
     <string name="menu_backup">Home</string>
     <string name="menu_restore">Restore</string>
-    <string name="menu_import_old">Import 阅读R data</string>
+    <string name="menu_import_old">Import 阅读RU data</string>
     <string name="webdav_cache_backup">Offline cache book backup</string>
     <string name="webdav_cache_backup_s">Export to local and back up to the exports directory under the legado folder</string>
     <string name="backup_path">Backup to</string>
@@ -106,7 +106,7 @@
         \u3000\u3000 This is an open source reading software newly developed by Kotlin, welcome to join us.
     </string>
     <string name="app_share_description">
-        阅读R download link：\n https://github.com/refgd/legado/releases
+        阅读RU download link：\n https://github.com/refgd/legado/releases
     </string>
     <string name="version_name">Version %s</string>
     <string name="pt_background_verification">Background-verification</string>
@@ -844,7 +844,7 @@
     <string name="app_folder_picker">App folder picker</string>
     <string name="app_file_picker">App file picker</string>
     <string name="a10_permission_toast">Android 10+ unable to read and write file due to permission restrictions</string>
-    <string name="add_to_text_context_menu_s">Long tap to display 阅读R·Search in the operation menu</string>
+    <string name="add_to_text_context_menu_s">Long tap to display 阅读RU·Search in the operation menu</string>
     <string name="add_to_text_context_menu_t">Text operation display Search</string>
     <string name="record_log">Record log</string>
     <string name="log">Log</string>
@@ -906,7 +906,7 @@
     <string name="default_color">默认颜色</string>
     <string name="main_menu">Main menu</string>
     <string name="request_permission">Tap to grant permission</string>
-    <string name="tip_local_perm_request_storage">阅读R needs Storage permission, please tap the "Grant Permission" button below, or go to "Settings"-"Application Permissions"-to open the required permission. If the permission is still not work, please tap "Select Folder" in the upper right corner to use the system folder picker.</string>
+    <string name="tip_local_perm_request_storage">阅读RU needs Storage permission, please tap the "Grant Permission" button below, or go to "Settings"-"Application Permissions"-to open the required permission. If the permission is still not work, please tap "Select Folder" in the upper right corner to use the system folder picker.</string>
     <string name="alouding_disable">The selected text cannot be spoken in full text speech</string>
     <string name="read_body_to_lh">Extend to cutout</string>
     <string name="toc_updateing">Updating Chapters</string>
@@ -1184,7 +1184,6 @@
     <string name="check_source_show_debug_message">Check book source shows debug message</string>
     <string name="check_source_show_debug_message_summary">Show network status and timestamp during source checking</string>
     <string name="need_login">need login</string>
-    <string name="pref_cronet_summary">use Cronet access network</string>
     <string name="anti_alias">Anti-Aliasing</string>
     <string name="pref_anti_alias_summary">Anti-Aliasing when draw picture</string>
     <string name="upload_url">upload url</string>
@@ -1622,11 +1621,11 @@
     <string name="video_setting">视频设置</string>
     <string name="video_setting_summary">自动播放、全屏播放等配置</string>
     <string name="history">历史记录</string>
-    <string name="app_name_sigma">阅读R</string>
-    <string name="about_description_sigma">\u3000\u3000阅读R 基于 Legado 持续定制，专注阅读体验、书源工具与 AI 辅助能力。</string>
+    <string name="app_name_sigma">阅读RU</string>
+    <string name="about_description_sigma">\u3000\u3000阅读RU 基于 Legado 持续定制，专注阅读体验、书源工具与 AI 辅助能力。</string>
     <string name="contributors_summary_sigma">当前维护仓库：refgd/legado，详情请在 GitHub 中查看</string>
     <string name="app_share_description_sigma">
-        阅读R 下载地址：\nhttps://github.com/refgd/legado/releases
+        阅读RU 下载地址：\nhttps://github.com/refgd/legado/releases
     </string>
     <string name="sure_cache_book">是否确认开始缓存？</string>
     <string name="non_printable_set">不可视字符设定</string>
@@ -1663,7 +1662,7 @@
     <string name="invalid_file_path">文件路径无效</string>
     <string name="is_system_tts_no_export">无法导出系统tts</string>
     <string name="click_image_way">点击图片方式</string>
-    <string name="ai_import_default_skill">Install default 阅读R skill</string>
+    <string name="ai_import_default_skill">Install default 阅读RU skill</string>
     <string name="ai_import_default_skill_summary">Download a real SKILL.md from DandanLLab/legadoSkill</string>
     <string name="ai_skill_prompt">Manage skills</string>
     <string name="ai_skill_prompt_hint">Paste SKILL.md content</string>

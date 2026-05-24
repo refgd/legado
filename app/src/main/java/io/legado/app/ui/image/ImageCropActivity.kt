@@ -21,10 +21,7 @@ import io.legado.app.R
 import io.legado.app.base.BaseActivity
 import io.legado.app.constant.AppLog
 import io.legado.app.databinding.ActivityImageCropBinding
-import io.legado.app.help.http.addHeaders
-import io.legado.app.help.http.newCallResponse
-import io.legado.app.help.http.okHttpClient
-import io.legado.app.model.analyzeRule.AnalyzeUrl
+import io.legado.app.model.webBook.RustAnalyzerBridge
 import io.legado.app.utils.ImageProcessUtils
 import io.legado.app.utils.applyNavigationBarPadding
 import io.legado.app.utils.printOnDebug
@@ -156,19 +153,15 @@ class ImageCropActivity : BaseActivity<ActivityImageCropBinding>(
 
     private suspend fun copyImageSourceToFile(uri: Uri, target: File) {
         if (uri.scheme.equals("http", true) || uri.scheme.equals("https", true)) {
-            val analyzeUrl = AnalyzeUrl(uri.toString())
-            okHttpClient.newCallResponse(0) {
-                addHeaders(analyzeUrl.headerMap)
-                url(analyzeUrl.urlNoQuery)
-            }.use { response ->
-                if (!response.isSuccessful) {
-                    error("HTTP ${response.code}")
-                }
-                response.body.byteStream().use { input ->
-                    target.outputStream().use { output ->
-                        input.copyTo(output)
-                    }
-                }
+            val response = RustAnalyzerBridge.fetchRawUrl(
+                uri.toString(),
+                "ImageCropActivity.copyImageSource"
+            )
+            if (response.code !in 200..299) {
+                error("HTTP ${response.code}")
+            }
+            target.outputStream().use { output ->
+                output.write(response.body)
             }
             return
         }

@@ -1,10 +1,9 @@
 package io.legado.app.help.source
 
 import io.legado.app.data.entities.RssSource
+import io.legado.app.model.webBook.RustAnalyzerBridge
 import io.legado.app.utils.ACache
 import io.legado.app.utils.MD5Utils
-import io.legado.app.utils.NetworkUtils
-import com.script.rhino.runScriptWithContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -15,39 +14,19 @@ private fun RssSource.getSortUrlsKey(): String {
 }
 
 suspend fun RssSource.sortUrls(): List<Pair<String, String>> {
-    return arrayListOf<Pair<String, String>>().apply {
+    return withContext(Dispatchers.IO) {
         val sortUrlsKey = getSortUrlsKey()
-        withContext(Dispatchers.IO) {
-            kotlin.runCatching {
-                var str = sortUrl
-                if (sortUrl?.startsWith("<js>", false) == true
-                    || sortUrl?.startsWith("@js:", false) == true
-                ) {
-                    str = aCache.getAsString(sortUrlsKey)
-                    if (str.isNullOrBlank()) {
-                        val jsStr = if (sortUrl!!.startsWith("@")) {
-                            sortUrl!!.substring(4)
-                        } else {
-                            sortUrl!!.substring(4, sortUrl!!.lastIndexOf("<"))
-                        }
-                        str = runScriptWithContext {
-                            evalJS(jsStr).toString()
-                        }
-                        aCache.put(sortUrlsKey, str)
-                    }
-                }
-                str?.split("(&&|\n)+".toRegex())?.forEach { sort ->
-                    val name = sort.substringBefore("::")
-                    val url = sort.substringAfter("::", "")
-                    if (url.isNotEmpty()) {
-                        add(Pair(name, url))
-                    }
-                }
-                if (isEmpty()) {
-                    add(Pair("", sourceUrl))
-                }
-            }
+        val cached = aCache.getAsString(sortUrlsKey)
+        if (!cached.isNullOrBlank()) {
+            return@withContext parseSortUrls(cached).ifEmpty { listOf("" to sourceUrl) }
         }
+        val sorts = RustAnalyzerBridge.rssSortUrls(this@sortUrls)
+        if (sortUrl?.startsWith("<js>", false) == true
+            || sortUrl?.startsWith("@js:", false) == true
+        ) {
+            aCache.put(sortUrlsKey, sorts.joinToString("\n") { "${it.first}::${it.second}" })
+        }
+        sorts.ifEmpty { listOf("" to sourceUrl) }
     }
 }
 
@@ -55,4 +34,13 @@ suspend fun RssSource.removeSortCache() {
     withContext(Dispatchers.IO) {
         aCache.remove(getSortUrlsKey())
     }
+}
+
+private fun parseSortUrls(raw: String): List<Pair<String, String>> {
+    return raw.split("(&&|\n)+".toRegex())
+        .mapNotNull { sort ->
+            val name = sort.substringBefore("::")
+            val url = sort.substringAfter("::", "")
+            if (url.isNotEmpty()) name to url else null
+        }
 }

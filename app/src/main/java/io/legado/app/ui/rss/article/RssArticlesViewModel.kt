@@ -9,6 +9,8 @@ import io.legado.app.constant.AppLog
 import io.legado.app.data.appDb
 import io.legado.app.data.entities.RssArticle
 import io.legado.app.data.entities.RssSource
+import io.legado.app.exception.NoStackTraceException
+import io.legado.app.model.webBook.isRustNetworkAccessError
 import io.legado.app.model.rss.Rss
 import io.legado.app.utils.stackTraceStr
 import kotlinx.coroutines.Dispatchers.IO
@@ -52,8 +54,16 @@ class RssArticlesViewModel(application: Application) : BaseViewModel(application
             isLoading = false
         }.onError {
             loadFinallyLiveData.postValue(false)
-            AppLog.put("rss获取内容失败", it)
             loadErrorLiveData.postValue(it.stackTraceStr)
+            if (it.isRustNetworkAccessError()) {
+                isLoading = false
+                AppLog.put("RssArticles network load failed for ${rssSource.sourceName} page $page\n${it.localizedMessage}", it)
+                return@onError
+            }
+            throw NoStackTraceException(
+                "RssArticles Rust list failed for ${rssSource.sourceName} page $page: " +
+                        (it.localizedMessage ?: it::class.java.name)
+            )
         }
     }
 
@@ -71,8 +81,16 @@ class RssArticlesViewModel(application: Application) : BaseViewModel(application
             isLoading = false
         }.onError {
             loadFinallyLiveData.postValue(false)
-            AppLog.put("rss获取内容失败", it)
             loadErrorLiveData.postValue(it.stackTraceStr)
+            if (it.isRustNetworkAccessError()) {
+                isLoading = false
+                AppLog.put("RssArticles network load failed for ${rssSource.sourceName} page $page\n${it.localizedMessage}", it)
+                return@onError
+            }
+            throw NoStackTraceException(
+                "RssArticles Rust list failed for ${rssSource.sourceName} page $page: " +
+                        (it.localizedMessage ?: it::class.java.name)
+            )
         }
     }
 

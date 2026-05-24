@@ -53,7 +53,6 @@ import androidx.core.text.parseAsHtml
 import androidx.core.view.postDelayed
 import io.legado.app.R
 import io.legado.app.help.TextViewTagHandler
-import io.legado.app.model.analyzeRule.AnalyzeUrl.Companion.paramPattern
 import io.noties.markwon.Markwon
 import io.noties.markwon.image.AsyncDrawableSpan
 
@@ -247,10 +246,10 @@ fun TextView.setHtml(html: String, imageGetter: GlideImageGetter? = null, textVi
         if (start >= 0 && end >= 0) {
             val source = imageSpan.source ?: continue
             var click: String? = null
-            val urlMatcher = paramPattern.matcher(source)
+            val urlMatcher = UrlOptions.paramPattern.matcher(source)
             if (urlMatcher.find()) {
                 val urlOptionStr = source.substring(urlMatcher.end())
-                GSON.fromJsonObject<Map<String, String>>(urlOptionStr).getOrNull()?.let {
+                UrlOptions.parseStringMap(urlOptionStr, "TextView.setHtml.imageClick").let {
                     click = it["click"]
                 }
             }

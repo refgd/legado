@@ -1,20 +1,35 @@
 package io.legado.app.utils
 
 import androidx.annotation.Keep
-import io.legado.app.help.CacheManager
+import io.legado.app.data.entities.BookSource
+import io.legado.app.exception.NoStackTraceException
+import io.legado.app.model.webBook.RustAnalyzerBridge
 
 /**
  * 发现按钮信息
  */
 @Keep
 class InfoMap(val sourceUrl: String): MutableMap<String, String> {
+    private val rustKey = "__legado_info_map"
     private var actualMap: MutableMap<String, String>
     var needSave = false
     private var saveTime = 0
 
     init {
-        val cache = CacheManager.get("infoMap_${sourceUrl}")
-        actualMap = GSON.fromJsonObject<MutableMap<String, String>>(cache).getOrNull() ?: mutableMapOf()
+        val cache = RustAnalyzerBridge.evalJs(
+            source = rustSource(),
+            script = "source.get(${GSON.toJson(rustKey)})",
+            rulePath = "InfoMap.init"
+        )
+        actualMap = when {
+            cache.isBlank() || cache == "null" -> mutableMapOf()
+            else -> GSON.fromJsonObject<MutableMap<String, String>>(cache).getOrElse { error ->
+                throw NoStackTraceException(
+                    "InfoMap Rust source state JSON is invalid for $sourceUrl: " +
+                            (error.localizedMessage ?: error::class.java.name)
+                )
+            }
+        }
     }
 
     /**
@@ -28,9 +43,18 @@ class InfoMap(val sourceUrl: String): MutableMap<String, String> {
 
     fun saveNow() {
         val json = GSON.toJson(actualMap)
-        CacheManager.put("infoMap_${sourceUrl}", json, saveTime)
+        RustAnalyzerBridge.evalJs(
+            source = rustSource(),
+            script = "source.put(${GSON.toJson(rustKey)}, ${GSON.toJson(json)})",
+            rulePath = "InfoMap.saveNow"
+        )
         needSave = false
     }
+
+    private fun rustSource(): BookSource = BookSource(
+        bookSourceUrl = sourceUrl,
+        bookSourceName = sourceUrl
+    )
 
     fun get(): MutableMap<String, String> {
         return actualMap

@@ -10,7 +10,7 @@ import io.legado.app.base.adapter.ItemViewHolder
 import io.legado.app.data.entities.RssArticle
 import io.legado.app.databinding.ItemRssArticle3Binding
 import io.legado.app.help.glide.ImageLoader
-import io.legado.app.help.glide.OkHttpModelLoader
+import io.legado.app.help.glide.RustImageModelLoader
 import io.legado.app.utils.getCompatColor
 import com.bumptech.glide.request.RequestListener
 import com.bumptech.glide.load.DataSource
@@ -100,7 +100,7 @@ class RssArticlesAdapter3(context: Context, callBack: CallBack) :
                 return
             }
             val options = RequestOptions()
-                .set(OkHttpModelLoader.sourceOriginOption, item.origin)
+                .set(RustImageModelLoader.sourceOriginOption, item.origin)
             val imageRequest = ImageLoader.load(context, imageUrl)
                 .apply(options)
                 .placeholder(R.drawable.transparent_placeholder) //svg图会依靠这个进行尺寸约束

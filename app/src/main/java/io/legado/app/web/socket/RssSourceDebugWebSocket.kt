@@ -45,26 +45,32 @@ class RssSourceDebugWebSocket(handshakeRequest: NanoHTTPD.IHTTPSession) :
 
     override fun onMessage(message: NanoWSD.WebSocketFrame) {
         launch(IO) {
-            kotlin.runCatching {
+            try {
                 if (!message.textPayload.isJson()) {
                     send("数据必须为Json格式")
                     close(NanoWSD.WebSocketFrame.CloseCode.NormalClosure, "调试结束", false)
                     return@launch
                 }
-                val debugBean =
-                    GSON.fromJsonObject<Map<String, String>>(message.textPayload).getOrNull()
-                if (debugBean != null) {
-                    val tag = debugBean["tag"]
-                    if (tag.isNullOrBlank()) {
-                        send(appCtx.getString(R.string.cannot_empty))
-                        close(NanoWSD.WebSocketFrame.CloseCode.NormalClosure, "调试结束", false)
-                        return@launch
+                val debugBean = GSON.fromJsonObject<Map<String, String>>(message.textPayload)
+                    .getOrElse {
+                        throw IllegalArgumentException(
+                            "RssSourceDebugWebSocket message JSON is invalid for Rust analyzer handoff: " +
+                                (it.localizedMessage ?: it::class.java.name)
+                        )
                     }
-                    appDb.rssSourceDao.getByKey(tag)?.let {
-                        Debug.callback = this@RssSourceDebugWebSocket
-                        Debug.startDebug(this, it)
-                    }
+                val tag = debugBean["tag"]
+                if (tag.isNullOrBlank()) {
+                    send(appCtx.getString(R.string.cannot_empty))
+                    close(NanoWSD.WebSocketFrame.CloseCode.NormalClosure, "调试结束", false)
+                    return@launch
                 }
+                appDb.rssSourceDao.getByKey(tag)?.let {
+                    Debug.callback = this@RssSourceDebugWebSocket
+                    Debug.startDebug(this, it)
+                }
+            } catch (e: Throwable) {
+                send(e.localizedMessage ?: e::class.java.name)
+                close(NanoWSD.WebSocketFrame.CloseCode.NormalClosure, "调试结束", false)
             }
         }
     }

@@ -3,16 +3,9 @@ package io.legado.app.model.rss
 import io.legado.app.data.entities.RssArticle
 import io.legado.app.data.entities.RssSource
 import io.legado.app.help.coroutine.Coroutine
-import io.legado.app.help.http.StrResponse
-import io.legado.app.model.Debug
-import io.legado.app.model.analyzeRule.AnalyzeRule
-import io.legado.app.model.analyzeRule.AnalyzeRule.Companion.setCoroutineContext
-import io.legado.app.model.analyzeRule.AnalyzeUrl
-import io.legado.app.model.analyzeRule.RuleData
-import io.legado.app.utils.NetworkUtils
+import io.legado.app.model.webBook.RustAnalyzerBridge
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.currentCoroutineContext
 import kotlin.coroutines.CoroutineContext
 
 @Suppress("MemberVisibilityCanBePrivate")
@@ -39,45 +32,7 @@ object Rss {
         page: Int,
         key: String? = null
     ): Pair<MutableList<RssArticle>, String?> {
-        val ruleData = RuleData()
-        val analyzeUrl = AnalyzeUrl(
-            sortUrl,
-            page = page,
-            key = key,
-            baseUrl = rssSource.sourceUrl,
-            source = rssSource,
-            ruleData = ruleData,
-            coroutineContext = currentCoroutineContext(),
-            hasLoginHeader = false
-        )
-        val checkJs = rssSource.loginCheckJs
-        val res = kotlin.runCatching {
-            analyzeUrl.getStrResponseAwait().let {
-                if (!checkJs.isNullOrBlank()) { //检测源是否已登录
-                    analyzeUrl.evalJS(checkJs, it) as StrResponse
-                } else {
-                    it
-                }
-            }
-        }.getOrElse { throwable ->
-            if (!checkJs.isNullOrBlank()) {
-                val errResponse = analyzeUrl.getErrStrResponse(throwable)
-                try {
-                    (analyzeUrl.evalJS(checkJs, errResponse) as StrResponse).also {
-                        if (it.code() == 500) {
-                            throw throwable
-                        }
-                    }
-                } catch (_: Throwable) {
-                    throw throwable
-                }
-            } else {
-                throw throwable
-            }
-        }
-        checkRedirect(rssSource, res)
-        Debug.log(rssSource.sourceUrl, "≡获取成功:${analyzeUrl.ruleUrl}")
-        return RssParserByRule.parseXML(sortName, sortUrl, res.url, res.body, rssSource, ruleData)
+        return RustAnalyzerBridge.rssArticles(rssSource, sortName, sortUrl, key, page)
     }
 
     fun getContent(
@@ -97,60 +52,6 @@ object Rss {
         ruleContent: String,
         rssSource: RssSource,
     ): String {
-        val analyzeUrl = AnalyzeUrl(
-            rssArticle.link,
-            baseUrl = rssArticle.origin,
-            source = rssSource,
-            ruleData = rssArticle,
-            coroutineContext = currentCoroutineContext(),
-            hasLoginHeader = false
-        )
-        val checkJs = rssSource.loginCheckJs
-        val res = kotlin.runCatching {
-            analyzeUrl.getStrResponseAwait().let {
-                if (!checkJs.isNullOrBlank()) { //检测源是否已登录
-                    analyzeUrl.evalJS(checkJs, it) as StrResponse
-                } else {
-                    it
-                }
-            }
-        }.getOrElse { throwable ->
-            if (!checkJs.isNullOrBlank()) {
-                val errResponse = analyzeUrl.getErrStrResponse(throwable)
-                try {
-                    (analyzeUrl.evalJS(checkJs, errResponse) as StrResponse).also {
-                        if (it.code() == 500) {
-                            throw throwable
-                        }
-                    }
-                } catch (_: Throwable) {
-                    throw throwable
-                }
-            } else {
-                throw throwable
-            }
-        }
-        checkRedirect(rssSource, res)
-        Debug.log(rssSource.sourceUrl, "≡获取成功:${rssSource.sourceUrl}")
-        Debug.log(rssSource.sourceUrl, res.body ?: "", state = 20)
-        val analyzeRule = AnalyzeRule(rssArticle, rssSource)
-        analyzeRule.setContent(res.body)
-            .setBaseUrl(NetworkUtils.getAbsoluteURL(rssArticle.origin, rssArticle.link))
-            .setCoroutineContext(currentCoroutineContext())
-            .setRedirectUrl(res.url)
-        return analyzeRule.getString(ruleContent)
-    }
-
-    /**
-     * 检测重定向
-     */
-    private fun checkRedirect(rssSource: RssSource, response: StrResponse) {
-        response.raw.priorResponse?.let {
-            if (it.isRedirect) {
-                Debug.log(rssSource.sourceUrl, "≡检测到重定向(${it.code})")
-                Debug.log(rssSource.sourceUrl, "┌重定向后地址")
-                Debug.log(rssSource.sourceUrl, "└${response.url}")
-            }
-        }
+        return RustAnalyzerBridge.rssContent(rssSource, rssArticle, ruleContent)
     }
 }

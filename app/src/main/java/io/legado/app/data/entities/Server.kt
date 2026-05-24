@@ -3,6 +3,7 @@ package io.legado.app.data.entities
 import android.os.Parcelable
 import androidx.room.Entity
 import androidx.room.PrimaryKey
+import io.legado.app.exception.NoStackTraceException
 import io.legado.app.utils.GSON
 import io.legado.app.utils.fromJsonObject
 import kotlinx.parcelize.Parcelize
@@ -44,7 +45,14 @@ data class Server(
     }
 
     fun getWebDavConfig(): WebDavConfig? {
-        return if (type == TYPE.WEBDAV) GSON.fromJsonObject<WebDavConfig>(config).getOrNull() else null
+        if (type != TYPE.WEBDAV) return null
+        val json = config ?: return null
+        return GSON.fromJsonObject<WebDavConfig>(json).getOrElse {
+            throw NoStackTraceException(
+                "Server WebDAV config JSON is invalid for Rust analyzer handoff: " +
+                    (it.localizedMessage ?: it::class.java.name)
+            )
+        }
     }
 
     @Parcelize

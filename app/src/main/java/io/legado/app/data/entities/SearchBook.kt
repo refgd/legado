@@ -10,8 +10,6 @@ import androidx.room.Index
 import androidx.room.PrimaryKey
 import io.legado.app.R
 import io.legado.app.constant.BookType
-import io.legado.app.utils.GSON
-import io.legado.app.utils.fromJsonObject
 import kotlinx.parcelize.IgnoredOnParcel
 import kotlinx.parcelize.Parcelize
 
@@ -74,7 +72,7 @@ data class SearchBook(
     @delegate:Ignore
     @IgnoredOnParcel
     override val variableMap: HashMap<String, String> by lazy {
-        GSON.fromJsonObject<HashMap<String, String>>(variable).getOrNull() ?: HashMap()
+        parseVariableMap("SearchBook($origin/$bookUrl)", variable)
     }
 
     @delegate:Transient

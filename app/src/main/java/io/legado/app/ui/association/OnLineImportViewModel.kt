@@ -3,29 +3,17 @@ package io.legado.app.ui.association
 import android.app.Application
 import androidx.core.net.toUri
 import io.legado.app.R
-import io.legado.app.constant.AppConst
 import io.legado.app.help.config.ReadBookConfig
-import io.legado.app.help.http.decompressed
-import io.legado.app.help.http.newCallResponseBody
-import io.legado.app.help.http.okHttpClient
-import io.legado.app.help.http.text
 import io.legado.app.utils.FileUtils
+import io.legado.app.utils.RustRemoteFetch
 import io.legado.app.utils.externalCache
-import okhttp3.MediaType.Companion.toMediaType
 import splitties.init.appCtx
 
 class OnLineImportViewModel(app: Application) : BaseAssociationViewModel(app) {
 
     fun getText(url: String, success: (text: String) -> Unit) {
         execute {
-            okHttpClient.newCallResponseBody {
-                if (url.endsWith("#requestWithoutUA")) {
-                    url(url.substringBeforeLast("#requestWithoutUA"))
-                    header(AppConst.UA_NAME, "null")
-                } else {
-                    url(url)
-                }
-            }.decompressed().text("utf-8")
+            RustRemoteFetch.text(url, "OnLineImportViewModel.getText")
         }.onSuccess {
             success.invoke(it)
         }.onError {
@@ -37,14 +25,7 @@ class OnLineImportViewModel(app: Application) : BaseAssociationViewModel(app) {
 
     fun getBytes(url: String, success: (bytes: ByteArray) -> Unit) {
         execute {
-            okHttpClient.newCallResponseBody {
-                if (url.endsWith("#requestWithoutUA")) {
-                    url(url.substringBeforeLast("#requestWithoutUA"))
-                    header(AppConst.UA_NAME, "null")
-                } else {
-                    url(url)
-                }
-            }.bytes()
+            RustRemoteFetch.bytes(url, "OnLineImportViewModel.getBytes").body
         }.onSuccess {
             success.invoke(it)
         }.onError {
@@ -104,30 +85,20 @@ class OnLineImportViewModel(app: Application) : BaseAssociationViewModel(app) {
 
     fun determineType(url: String, finally: (title: String, msg: String) -> Unit) {
         execute {
-            val rs = okHttpClient.newCallResponseBody {
-                if (url.endsWith("#requestWithoutUA")) {
-                    url(url.substringBeforeLast("#requestWithoutUA"))
-                    header(AppConst.UA_NAME, "null")
-                } else {
-                    url(url)
-                }
-            }
-            when (rs.contentType()) {
-                "application/zip".toMediaType(),
-                "application/octet-stream".toMediaType() -> {
-                    importReadConfig(rs.bytes(), finally)
+            val rs = RustRemoteFetch.bytes(url, "OnLineImportViewModel.determineType")
+            when (rs.contentType?.substringBefore(';')?.trim()?.lowercase()) {
+                "application/zip",
+                "application/octet-stream" -> {
+                    importReadConfig(rs.body, finally)
                 }
                 else -> {
-                    val inputStream = rs.byteStream()
                     val file = FileUtils.createFileIfNotExist(
                         appCtx.externalCache,
                         "download",
                         "scheme_import_cache.json"
                     )
                     file.outputStream().use { out ->
-                        inputStream.use {
-                            it.copyTo(out)
-                        }
+                        out.write(rs.body)
                     }
                     importJson(file.toUri())
                 }

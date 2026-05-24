@@ -3,10 +3,9 @@ package io.legado.app.utils
 import io.legado.app.BuildConfig
 import io.legado.app.constant.AppLog
 import io.legado.app.constant.AppPattern.semicolonRegex
+import io.legado.app.exception.NoStackTraceException
 import io.legado.app.help.config.AppConfig
-import io.legado.app.model.analyzeRule.AnalyzeUrl
-import io.legado.app.model.analyzeRule.CustomUrl
-import java.net.HttpURLConnection
+import io.legado.app.model.webBook.RustAnalyzerBridge
 import java.net.URL
 import java.net.URLDecoder
 
@@ -42,24 +41,23 @@ object UrlUtil {
     }
 
 
-    /* 阅读定义的url,{urlOption} */
-    fun getFileName(analyzeUrl: AnalyzeUrl): String? {
-        return getFileName(analyzeUrl.url, analyzeUrl.headerMap)
-    }
-
     /**
      * 根据网络url获取文件信息 文件名
      */
     @Suppress("MemberVisibilityCanBePrivate")
     fun getFileName(fileUrl: String, headerMap: Map<String, String>? = null): String? {
-        return kotlin.runCatching {
+        return try {
             val url = URL(fileUrl)
             var fileName: String? = getFileNameFromPath(url)
             if (fileName == null) {
                 fileName = getFileNameFromResponseHeader(url, headerMap)
             }
             fileName
-        }.getOrNull()
+        } catch (e: Exception) {
+            throw NoStackTraceException(
+                "UrlUtil file name resolution failed through Rust fetch: $fileUrl; ${e.localizedMessage}"
+            )
+        }
     }
 
     @Suppress("MemberVisibilityCanBePrivate")
@@ -67,28 +65,23 @@ object UrlUtil {
         url: URL,
         headerMap: Map<String, String>? = null
     ): String? {
-        // HEAD方式获取链接响应头信息
-        val conn: HttpURLConnection = url.openConnection() as HttpURLConnection
-        conn.requestMethod = "HEAD"
-        // 下载链接可能还需要header才能成功访问
-        headerMap?.forEach { (key, value) ->
-            conn.setRequestProperty(key, value)
+        val requestOptions = linkedMapOf<String, Any>("method" to "HEAD")
+        headerMap?.takeIf { it.isNotEmpty() }?.let {
+            requestOptions["headers"] = it
         }
-        // 禁止重定向 否则获取不到响应头返回的Location
-        conn.instanceFollowRedirects = false
-        conn.connect()
+        val response = RustAnalyzerBridge.fetchRawUrl(
+            "${url},${GSON.toJson(requestOptions)}",
+            "UrlUtil.getFileName"
+        )
 
         if (AppConfig.recordLog || BuildConfig.DEBUG) {
-            val headers = conn.headerFields
             val headersString = buildString {
-                headers.forEach { (key, value) ->
-                   value.forEach {
-                       append(key)
-                       append(": ")
-                       append(it)
-                       append("\n")
-                   }
-               }
+                response.headersList.forEach { pair ->
+                    append(pair.getOrNull(0).orEmpty())
+                    append(": ")
+                    append(pair.getOrNull(1).orEmpty())
+                    append("\n")
+                }
             }
             AppLog.put("$url response header:\n$headersString")
         }
@@ -98,9 +91,9 @@ object UrlUtil {
          * filename="filename"
          * filename*="charset''filename"
          */
-        val raw: String? = conn.getHeaderField("Content-Disposition")
+        val raw: String? = response.headerValue("Content-Disposition")
         // Location跳转到实际链接
-        val redirectUrl: String? = conn.getHeaderField("Location")
+        val redirectUrl: String? = response.headerValue("Location")
 
         return if (raw != null) {
             val fileNames = raw.split(semicolonRegex).filter { it.contains("filename") }
@@ -133,6 +126,14 @@ object UrlUtil {
             AppLog.put("Cannot obtain URL file name, enable recordLog for response header")
             null
         }
+    }
+
+    private fun io.legado.app.model.webBook.RustRawFetchResult.headerValue(name: String): String? {
+        return headersList.firstNotNullOfOrNull { pair ->
+            val key = pair.getOrNull(0)
+            val value = pair.getOrNull(1)
+            if (key.equals(name, ignoreCase = true)) value else null
+        } ?: headers.entries.firstOrNull { it.key.equals(name, ignoreCase = true) }?.value
     }
     
     private fun getFileNameFromPath(fileUrl: URL): String? {

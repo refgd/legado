@@ -13,6 +13,7 @@ import io.legado.app.constant.EventBus
 import io.legado.app.data.appDb
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookSource
+import io.legado.app.exception.NoStackTraceException
 import io.legado.app.help.AppWebDav
 import io.legado.app.help.DefaultData
 import io.legado.app.help.book.BookHelp
@@ -26,6 +27,7 @@ import io.legado.app.help.config.AppConfig
 import io.legado.app.model.CacheBook
 import io.legado.app.model.ReadBook
 import io.legado.app.model.webBook.WebBook
+import io.legado.app.model.webBook.isRustNetworkAccessError
 import io.legado.app.service.CacheBookService
 import io.legado.app.utils.onEachParallel
 import io.legado.app.utils.postEvent
@@ -166,7 +168,13 @@ class MainViewModel(application: Application) : BaseViewModel(application) {
                     cacheBook()
                 }
             }.catch {
-                AppLog.put("更新目录出错\n${it.localizedMessage}", it)
+                if (it.isRustNetworkAccessError()) {
+                    AppLog.put("Bookshelf refresh toc network load failed\n${it.localizedMessage}", it)
+                    return@catch
+                }
+                throw NoStackTraceException(
+                    "Bookshelf refresh Rust toc flow failed: ${it.localizedMessage ?: it}"
+                )
             }.collect()
         }
     }
@@ -188,8 +196,8 @@ class MainViewModel(application: Application) : BaseViewModel(application) {
                 SourceCallBack.callBackSource(viewModelScope, SourceCallBack.START_SHELF_REFRESH, source)
             }
         }
-        kotlin.runCatching {
-            val oldBook = book.copy()
+        val oldBook = book.copy()
+        try {
             if (book.tocUrl.isBlank()) {
                 WebBook.getBookInfoAwait(source, book)
             } else {
@@ -208,14 +216,20 @@ class MainViewModel(application: Application) : BaseViewModel(application) {
             appDb.bookChapterDao.insert(*toc.toTypedArray())
             ReadBook.onChapterListUpdated(book)
             addDownload(source, book)
-        }.onFailure {
+        } catch (error: Throwable) {
             currentCoroutineContext().ensureActive()
-            AppLog.put("${book.name} 更新目录失败\n${it.localizedMessage}", it)
-            //这里可能因为时间太长书籍信息已经更改,所以重新获取
-            appDb.bookDao.getBook(book.bookUrl)?.let { book ->
-                book.addType(BookType.updateError)
-                appDb.bookDao.update(book)
+            appDb.bookDao.getBook(book.bookUrl)?.let { dbBook ->
+                dbBook.addType(BookType.updateError)
+                appDb.bookDao.update(dbBook)
             }
+            if (error.isRustNetworkAccessError()) {
+                AppLog.put("Bookshelf refresh network load failed for ${book.name}\n${error.localizedMessage}", error)
+                return
+            }
+            throw NoStackTraceException(
+                "Bookshelf refresh Rust detail/toc failed for ${book.name}: " +
+                    (error.localizedMessage ?: error.toString())
+            )
         }
     }
 

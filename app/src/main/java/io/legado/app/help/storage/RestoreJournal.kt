@@ -5,6 +5,7 @@ import io.legado.app.help.config.NavigationBarIconConfig
 import io.legado.app.help.config.ReadBookConfig
 import io.legado.app.help.config.ThemeConfig
 import io.legado.app.help.config.ThemePackageManager
+import io.legado.app.exception.NoStackTraceException
 import io.legado.app.model.VideoPlay.VIDEO_PREF_NAME
 import io.legado.app.utils.FileUtils
 import io.legado.app.utils.GSON
@@ -166,9 +167,11 @@ object RestoreJournal {
 
     private fun readState(): State? {
         if (!stateFile.exists()) return null
-        return GSON.fromJsonObject<State>(stateFile.readText()).getOrNull() ?: run {
-            clear()
-            null
+        return GSON.fromJsonObject<State>(stateFile.readText()).getOrElse {
+            throw NoStackTraceException(
+                "RestoreJournal state JSON is invalid for Rust analyzer state handoff: " +
+                    (it.localizedMessage ?: it::class.java.name)
+            )
         }
     }
 

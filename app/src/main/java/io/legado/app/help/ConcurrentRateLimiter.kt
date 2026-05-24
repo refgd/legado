@@ -2,7 +2,7 @@ package io.legado.app.help
 
 import io.legado.app.data.entities.BaseSource
 import io.legado.app.exception.ConcurrentException
-import io.legado.app.model.analyzeRule.AnalyzeUrl.ConcurrentRecord
+import io.legado.app.utils.ConcurrentRecord
 import kotlinx.coroutines.delay
 import java.util.concurrent.ConcurrentHashMap
 

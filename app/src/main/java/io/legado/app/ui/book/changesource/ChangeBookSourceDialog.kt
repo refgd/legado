@@ -25,8 +25,10 @@ import io.legado.app.data.entities.BookChapter
 import io.legado.app.data.entities.BookSource
 import io.legado.app.data.entities.SearchBook
 import io.legado.app.databinding.DialogBookChangeSourceBinding
+import io.legado.app.exception.NoStackTraceException
 import io.legado.app.help.book.isWebFile
 import io.legado.app.help.config.AppConfig
+import io.legado.app.model.webBook.isRustNetworkAccessError
 import io.legado.app.lib.dialogs.alert
 import io.legado.app.lib.theme.applyUiSearchTypeface
 import io.legado.app.lib.theme.elevation
@@ -45,6 +47,7 @@ import io.legado.app.utils.getCompatDrawable
 import io.legado.app.utils.observeEvent
 import io.legado.app.utils.setLayout
 import io.legado.app.utils.startActivity
+import io.legado.app.utils.toastOnUi
 import io.legado.app.utils.transaction
 import io.legado.app.utils.viewbindingdelegate.viewBinding
 import kotlinx.coroutines.Dispatchers.IO
@@ -409,7 +412,14 @@ class ChangeBookSourceDialog() : BaseDialogFragment(R.layout.dialog_book_change_
             onSuccess?.invoke()
         }, {
             waitDialog.dismiss()
-            AppLog.put("换源获取目录出错\n$it", it, true)
+            if (it.isRustNetworkAccessError()) {
+                AppLog.put("ChangeBookSourceDialog toc network load failed for ${book.name}\n${it.localizedMessage}", it)
+                toastOnUi(it.localizedMessage ?: getString(R.string.unknown_error))
+            } else {
+                throw NoStackTraceException(
+                    "ChangeBookSourceDialog Rust toc failed for ${book.name}: ${it.localizedMessage ?: it}"
+                )
+            }
         })
         waitDialog.setOnCancelListener {
             coroutine.cancel()

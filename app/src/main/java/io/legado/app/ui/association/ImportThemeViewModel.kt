@@ -5,15 +5,11 @@ import androidx.core.net.toUri
 import androidx.lifecycle.MutableLiveData
 import io.legado.app.R
 import io.legado.app.base.BaseViewModel
-import io.legado.app.constant.AppConst
 import io.legado.app.constant.AppLog
 import io.legado.app.exception.NoStackTraceException
 import io.legado.app.help.config.ThemeConfig
-import io.legado.app.help.http.decompressed
-import io.legado.app.help.http.newCallResponseBody
-import io.legado.app.help.http.okHttpClient
-import io.legado.app.help.http.text
 import io.legado.app.utils.GSON
+import io.legado.app.utils.RustRemoteFetch
 import io.legado.app.utils.fromJsonArray
 import io.legado.app.utils.fromJsonObject
 import io.legado.app.utils.isAbsUrl
@@ -102,16 +98,7 @@ class ImportThemeViewModel(app: Application) : BaseViewModel(app) {
     }
 
     private suspend fun importSourceUrl(url: String) {
-        okHttpClient.newCallResponseBody {
-            if (url.endsWith("#requestWithoutUA")) {
-                url(url.substringBeforeLast("#requestWithoutUA"))
-                header(AppConst.UA_NAME, "null")
-            } else {
-                url(url)
-            }
-        }.decompressed().text().let {
-            importSourceAwait(it)
-        }
+        importSourceAwait(RustRemoteFetch.text(url, "ImportThemeViewModel.importSourceUrl"))
     }
 
     private fun comparisonSource() {

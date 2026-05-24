@@ -42,7 +42,7 @@ jobs:
             printf '版本号：%s\n' "$release_name"
             printf '更新内容：\n'
             printf '%s\n\n' "$release_body"
-            printf '#阅读 #Legado #阅读R\n'
+            printf '#阅读 #Legado #阅读RU\n'
           } > telegram-caption.txt
 
       - name: Download APK release assets

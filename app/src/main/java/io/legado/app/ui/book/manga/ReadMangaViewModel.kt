@@ -24,7 +24,8 @@ import io.legado.app.help.coroutine.Coroutine
 import io.legado.app.model.ReadManga
 import io.legado.app.model.localBook.LocalBook
 import io.legado.app.model.webBook.WebBook
-import io.legado.app.utils.mapParallelSafe
+import io.legado.app.model.webBook.isRustNetworkAccessError
+import io.legado.app.utils.mapParallel
 import io.legado.app.utils.postEvent
 import io.legado.app.utils.toastOnUi
 import kotlinx.coroutines.currentCoroutineContext
@@ -135,9 +136,13 @@ class ReadMangaViewModel(application: Application) : BaseViewModel(application) 
             return true
         }.onFailure {
             currentCoroutineContext().ensureActive()
-            //加载章节出错
-            ReadManga.mCallback?.loadFail(appCtx.getString(R.string.error_load_toc))
-            return false
+            if (it.isRustNetworkAccessError()) {
+                AppLog.put("ReadManga toc network load failed for ${book.name}\n${it.localizedMessage}", it)
+                return@onFailure
+            }
+            throw NoStackTraceException(
+                "ReadManga Rust toc failed for ${book.name}: ${it.localizedMessage ?: it}"
+            )
         }
         return true
     }
@@ -152,8 +157,13 @@ class ReadMangaViewModel(application: Application) : BaseViewModel(application) 
             return true
         } catch (e: Throwable) {
             currentCoroutineContext().ensureActive()
-            ReadManga.mCallback?.loadFail("详情页出错: ${e.localizedMessage}")
-            return false
+            if (e.isRustNetworkAccessError()) {
+                AppLog.put("ReadManga detail network load failed for ${book.name}\n${e.localizedMessage}", e)
+                return false
+            }
+            throw NoStackTraceException(
+                "ReadManga Rust detail failed for ${book.name}: ${e.localizedMessage ?: e}"
+            )
         }
     }
 
@@ -173,7 +183,7 @@ class ReadMangaViewModel(application: Application) : BaseViewModel(application) 
             }.onStart {
                 // 自动换源
 
-            }.mapParallelSafe(AppConfig.threadCount) { source ->
+            }.mapParallel(AppConfig.threadCount) { source ->
                 val book = WebBook.preciseSearchAwait(source, name, author).getOrThrow()
                 if (book.tocUrl.isEmpty()) {
                     WebBook.getBookInfoAwait(source, book)
@@ -199,8 +209,13 @@ class ReadMangaViewModel(application: Application) : BaseViewModel(application) 
             }.onCompletion {
                 // 换源完成
             }.catch {
-                AppLog.put("自动换源失败\n${it.localizedMessage}", it)
-                context.toastOnUi("自动换源失败\n${it.localizedMessage}")
+                if (it.isRustNetworkAccessError()) {
+                    AppLog.put("ReadManga auto change source network load failed for $name\n${it.localizedMessage}", it)
+                    return@catch
+                }
+                throw NoStackTraceException(
+                    "ReadManga auto change source Rust analyzer failed for $name: ${it.localizedMessage ?: it}"
+                )
             }.collect()
         }
     }

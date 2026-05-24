@@ -31,14 +31,13 @@ import io.legado.app.utils.postEvent
 import io.legado.app.utils.printOnDebug
 import io.legado.app.utils.putPrefInt
 import io.legado.app.utils.putPrefString
+import io.legado.app.utils.RustRemoteFetch
 import io.legado.app.utils.stackBlur
 import splitties.init.appCtx
 import java.io.File
 import java.io.FileInputStream
 import androidx.core.graphics.drawable.toDrawable
 import io.legado.app.help.coroutine.Coroutine
-import io.legado.app.help.http.newCallResponse
-import io.legado.app.help.http.okHttpClient
 import io.legado.app.utils.CenterCropBitmapDrawable
 import io.legado.app.utils.MD5Utils
 import io.legado.app.utils.getPrefBoolean
@@ -373,13 +372,12 @@ object ThemeConfig {
                     appCtx.toastOnUi(R.string.theme_background_downloading)
                     Coroutine.async {
                         kotlin.runCatching {
-                            val res = okHttpClient.newCallResponse(0) {
-                                url(backgroundPath)
-                            }
-                            res.body.byteStream().use { inputStream ->
-                                FileOutputStream(fileImg).use { outputStream ->
-                                    inputStream.copyTo(outputStream)
-                                }
+                            val bytes = RustRemoteFetch.bytes(
+                                backgroundPath,
+                                "ThemeConfig.backgroundPath"
+                            ).body
+                            FileOutputStream(fileImg).use { outputStream ->
+                                outputStream.write(bytes)
                             }
                         }.onSuccess {
                             appCtx.toastOnUi(R.string.theme_background_downloaded)

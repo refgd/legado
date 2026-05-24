@@ -25,11 +25,10 @@ import io.legado.app.help.config.SourceConfig
 import io.legado.app.help.coroutine.Coroutine
 import io.legado.app.help.source.SourceHelp
 import io.legado.app.model.webBook.WebBook
+import io.legado.app.model.webBook.isRustNetworkAccessError
 import io.legado.app.utils.internString
 import io.legado.app.utils.mapParallel
-import io.legado.app.utils.mapParallelSafe
 import io.legado.app.utils.onEachIndexed
-import io.legado.app.utils.toastOnUi
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers.IO
 import kotlinx.coroutines.ExecutorCoroutineDispatcher
@@ -37,7 +36,6 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -235,12 +233,8 @@ open class ChangeBookSourceViewModel(application: Application) : BaseViewModel(a
             }.onStart {
                 searchStateData.postValue(true)
             }.mapParallel(threadCount) {
-                try {
-                    withTimeout(60000L) {
-                        search(it)
-                    }
-                } catch (_: Throwable) {
-                    currentCoroutineContext().ensureActive()
+                withTimeout(60000L) {
+                    search(it)
                 }
                 it
             }.onEachIndexed { index, value ->
@@ -252,7 +246,15 @@ open class ChangeBookSourceViewModel(application: Application) : BaseViewModel(a
                 searchStateData.postValue(false)
                 searchFinishCallback?.invoke(searchBooks.isEmpty())
             }.catch {
-                AppLog.put("换源搜索出错\n${it.localizedMessage}", it)
+                if (it.isRustNetworkAccessError()) {
+                    AppLog.put("Change source search network load failed for $name\n${it.localizedMessage}", it)
+                    searchStateData.postValue(false)
+                    searchFinishCallback?.invoke(searchBooks.isEmpty())
+                    return@catch
+                }
+                throw NoStackTraceException(
+                    "Change source Rust search failed for $name: ${it.localizedMessage ?: it}"
+                )
             }.collect()
         }
     }
@@ -383,7 +385,7 @@ open class ChangeBookSourceViewModel(application: Application) : BaseViewModel(a
                 }
             }.onStart {
                 searchStateData.postValue(true)
-            }.mapParallelSafe(threadCount) {
+            }.mapParallel(threadCount) {
                 val source = appDb.bookSourceDao.getBookSource(it.origin)!!
                 withTimeout(60000L) {
                     loadBookInfo(source, it.toBook())
@@ -391,7 +393,14 @@ open class ChangeBookSourceViewModel(application: Application) : BaseViewModel(a
             }.onCompletion {
                 searchStateData.postValue(false)
             }.catch {
-                AppLog.put("换源刷新列表出错\n${it.localizedMessage}", it)
+                if (it.isRustNetworkAccessError()) {
+                    AppLog.put("Change source refresh network load failed for $name\n${it.localizedMessage}", it)
+                    searchStateData.postValue(false)
+                    return@catch
+                }
+                throw NoStackTraceException(
+                    "Change source refresh Rust detail/toc failed for $name: ${it.localizedMessage ?: it}"
+                )
             }.collect()
         }
     }
@@ -539,17 +548,21 @@ open class ChangeBookSourceViewModel(application: Application) : BaseViewModel(a
             searchBooks.forEach {
                 if (it.type == bookType) {
                     val book = it.toBook()
-                    val result = getToc(book).getOrNull()
-                    if (result != null) {
-                        return@execute Triple(book, result.first, result.second)
-                    }
+                    val result = getToc(book).getOrThrow()
+                    return@execute Triple(book, result.first, result.second)
                 }
             }
             throw NoStackTraceException("没有有效源")
         }.onSuccess {
             onSuccess.invoke(it.first, it.second, it.third)
         }.onError {
-            context.toastOnUi("自动换源失败\n${it.localizedMessage}")
+            if (it.isRustNetworkAccessError()) {
+                AppLog.put("Change source auto toc network load failed for $name\n${it.localizedMessage}", it)
+                return@onError
+            }
+            throw NoStackTraceException(
+                "Change source auto Rust toc failed for $name: ${it.localizedMessage ?: it}"
+            )
         }
     }
 

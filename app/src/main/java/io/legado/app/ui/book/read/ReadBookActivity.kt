@@ -28,12 +28,12 @@ import com.jaredrummler.android.colorpicker.ColorPickerDialogListener
 import io.legado.app.BuildConfig
 import io.legado.app.R
 import io.legado.app.constant.AppConst
-import io.legado.app.constant.AppLog
 import io.legado.app.constant.BookType
 import io.legado.app.constant.EventBus
 import io.legado.app.constant.PreferKey
 import io.legado.app.constant.Status
 import io.legado.app.data.appDb
+import io.legado.app.data.entities.BaseSource
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookChapter
 import io.legado.app.data.entities.BookProgress
@@ -64,11 +64,6 @@ import io.legado.app.lib.prefs.ColorPreference.ColorPickerDialogCompat
 import io.legado.app.lib.theme.accentColor
 import io.legado.app.model.ReadAloud
 import io.legado.app.model.ReadBook
-import io.legado.app.model.analyzeRule.AnalyzeRule
-import io.legado.app.model.analyzeRule.AnalyzeRule.Companion.setChapter
-import io.legado.app.model.analyzeRule.AnalyzeRule.Companion.setCoroutineContext
-import io.legado.app.utils.GSON
-import io.legado.app.utils.fromJsonObject
 import io.legado.app.utils.isJsonObject
 import io.legado.app.model.localBook.EpubFile
 import io.legado.app.model.localBook.MobiFile
@@ -150,8 +145,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import androidx.core.net.toUri
 import androidx.lifecycle.Lifecycle
-import com.script.rhino.runScriptWithContext
-import io.legado.app.model.analyzeRule.AnalyzeUrl.Companion.paramPattern
+import io.legado.app.utils.UrlOptions
 import java.lang.ref.WeakReference
 import io.legado.app.ui.login.SourceLoginJsExtensions
 
@@ -1532,17 +1526,7 @@ class ReadBookActivity : BaseReadBookActivity(),
                         throw NoStackTraceException("no pay action")
                     }
                     val java = SourceLoginJsExtensions(this@ReadBookActivity, source, BookType.text)
-                    runScriptWithContext {
-                        source.evalJS(payAction) {
-                            put("java", java)
-                            put("book", book)
-                            put("chapter", chapter)
-                            put("title", chapter.title)
-                            put("baseUrl", chapter.url)
-                            put("result", null)
-                            put("src", null)
-                        }.toString()
-                    }
+                    evalReadBookPayActionByRust(source, book, chapter, java, payAction)
                 }.onSuccess(IO) {
                     if (it.isAbsUrl()) {
                         startActivity<WebViewActivity> {
@@ -1562,7 +1546,7 @@ class ReadBookActivity : BaseReadBookActivity(),
                         }
                     }
                 }.onError {
-                    AppLog.put("执行购买操作出错\n${it.localizedMessage}", it, true)
+                    throw NoStackTraceException("ReadBookActivity payAction Rust JavaScript failed: ${it.localizedMessage ?: it}")
                 }
             }
             noButton()
@@ -1573,44 +1557,37 @@ class ReadBookActivity : BaseReadBookActivity(),
      * 点击图片
      */
     override fun oldClickImg(src: String): Boolean {
-        val urlMatcher = paramPattern.matcher(src)
+        val urlMatcher = UrlOptions.paramPattern.matcher(src)
         if (urlMatcher.find()) {
             val urlOptionStr = src.substring(urlMatcher.end())
-            val urlOptionMap = GSON.fromJsonObject<Map<String, String>>(urlOptionStr).getOrNull()
-            val click = urlOptionMap?.get("click")
+            val urlOptionMap = UrlOptions.parseStringMap(urlOptionStr, "ReadBookActivity.oldClickImg")
+            val click = urlOptionMap["click"]
             if (click != null) {
                 Coroutine.async(lifecycleScope,IO) {
                     val source = ReadBook.bookSource ?: return@async
                     val java = SourceLoginJsExtensions(this@ReadBookActivity, source, BookType.text)
                     val book = ReadBook.book ?: return@async
                     val chapter = appDb.bookChapterDao.getChapter(book.bookUrl, ReadBook.durChapterIndex) ?: throw Exception("no find chapter")
-                    runScriptWithContext {
-                        source.evalJS(click) {
-                            put("java", java)
-                            put("book", book)
-                            put("chapter", chapter)
-                            put("result", src)
-                        }
-                    }
+                    evalReadBookImageClickByRust(source, book, chapter, java, click, src)
                 }.onError {
-                    AppLog.put("执行图片链接click键值出错\n${it.localizedMessage}", it, true)
+                    throw NoStackTraceException("ReadBookActivity image click Rust JavaScript failed: ${it.localizedMessage ?: it}")
                 }
                 return true
             }
-            val jsStr = urlOptionMap?.get("js") ?: return false
+            val jsStr = urlOptionMap["js"] ?: return false
             Coroutine.async(lifecycleScope, IO) {
                 val source = ReadBook.bookSource ?: return@async
                 val book = ReadBook.book ?: return@async
                 val chapter = appDb.bookChapterDao.getChapter(book.bookUrl, ReadBook.durChapterIndex) ?: throw Exception("no find chapter")
                 val urlNoOption = src.take(urlMatcher.start())
-                AnalyzeRule(book, source).apply {
-                    setCoroutineContext(coroutineContext)
-                    setBaseUrl(chapter.url)
-                    setChapter(chapter)
-                    evalJS(jsStr, urlNoOption)
+                source.evalJS(jsStr) {
+                    put("book", book)
+                    put("chapter", chapter)
+                    put("baseUrl", chapter.url)
+                    put("result", urlNoOption)
                 }
             }.onError {
-                AppLog.put("执行图片链接js键值出错\n${it.localizedMessage}", it, true)
+                throw NoStackTraceException("ReadBookActivity image js Rust JavaScript failed: ${it.localizedMessage ?: it}")
             }
             return true
         }
@@ -1623,16 +1600,9 @@ class ReadBookActivity : BaseReadBookActivity(),
             val java = SourceLoginJsExtensions(this@ReadBookActivity, source, BookType.text)
             val book = ReadBook.book ?: return@async
             val chapter = appDb.bookChapterDao.getChapter(book.bookUrl, ReadBook.durChapterIndex) ?: throw Exception("no find chapter")
-            runScriptWithContext {
-                source.evalJS(click) {
-                    put("java", java)
-                    put("book", book)
-                    put("chapter", chapter)
-                    put("result", src)
-                }
-            }
+            evalReadBookImageClickByRust(source, book, chapter, java, click, src)
         }.onError {
-            AppLog.put("执行图片链接click键值出错\n${it.localizedMessage}", it, true)
+            throw NoStackTraceException("ReadBookActivity image click Rust JavaScript failed: ${it.localizedMessage ?: it}")
         }
     }
 
@@ -2161,4 +2131,39 @@ class ReadBookActivity : BaseReadBookActivity(),
         fun activeActivity(): ReadBookActivity? = activeActivityRef?.get()
     }
 
+}
+
+fun evalReadBookPayActionByRust(
+    source: BaseSource,
+    book: Book,
+    chapter: BookChapter,
+    java: SourceLoginJsExtensions,
+    payAction: String
+): String {
+    return source.evalJS(payAction) {
+        put("java", java)
+        put("book", book)
+        put("chapter", chapter)
+        put("title", chapter.title)
+        put("baseUrl", chapter.url)
+        put("result", null)
+        put("src", null)
+    }?.toString()
+        ?: throw NoStackTraceException("ReadBookActivity payAction Rust JavaScript returned no result")
+}
+
+fun evalReadBookImageClickByRust(
+    source: BaseSource,
+    book: Book,
+    chapter: BookChapter,
+    java: SourceLoginJsExtensions,
+    click: String,
+    src: String
+): Any? {
+    return source.evalJS(click) {
+        put("java", java)
+        put("book", book)
+        put("chapter", chapter)
+        put("result", src)
+    }
 }

@@ -51,23 +51,29 @@ class BookSearchWebSocket(handshakeRequest: NanoHTTPD.IHTTPSession) :
 
     override fun onMessage(message: NanoWSD.WebSocketFrame) {
         launch(IO) {
-            kotlin.runCatching {
+            try {
                 if (!message.textPayload.isJson()) {
                     send("数据必须为Json格式")
                     close(normalClosure, SEARCH_FINISH, false)
                     return@launch
                 }
-                val searchMap =
-                    GSON.fromJsonObject<Map<String, String>>(message.textPayload).getOrNull()
-                if (searchMap != null) {
-                    val key = searchMap["key"]
-                    if (key.isNullOrBlank()) {
-                        send(appCtx.getString(R.string.cannot_empty))
-                        close(normalClosure, SEARCH_FINISH, false)
-                        return@launch
+                val searchMap = GSON.fromJsonObject<Map<String, String>>(message.textPayload)
+                    .getOrElse {
+                        throw IllegalArgumentException(
+                            "BookSearchWebSocket message JSON is invalid for Rust analyzer handoff: " +
+                                (it.localizedMessage ?: it::class.java.name)
+                        )
                     }
-                    searchModel.search(System.currentTimeMillis(), key)
+                val key = searchMap["key"]
+                if (key.isNullOrBlank()) {
+                    send(appCtx.getString(R.string.cannot_empty))
+                    close(normalClosure, SEARCH_FINISH, false)
+                    return@launch
                 }
+                searchModel.search(System.currentTimeMillis(), key)
+            } catch (e: Throwable) {
+                send(e.localizedMessage ?: e::class.java.name)
+                close(normalClosure, SEARCH_FINISH, false)
             }
         }
     }

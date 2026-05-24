@@ -6,7 +6,6 @@ import android.net.Uri
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.MutableLiveData
 import androidx.lifecycle.viewModelScope
-import com.script.rhino.runScriptWithContext
 import io.legado.app.R
 import io.legado.app.base.BaseViewModel
 import io.legado.app.constant.AppLog
@@ -39,9 +38,10 @@ import io.legado.app.model.AudioPlay
 import io.legado.app.model.BookCover
 import io.legado.app.model.ReadBook
 import io.legado.app.model.ReadManga
-import io.legado.app.model.analyzeRule.AnalyzeUrl
 import io.legado.app.model.localBook.LocalBook
+import io.legado.app.model.webBook.RustAnalyzerBridge
 import io.legado.app.model.webBook.WebBook
+import io.legado.app.model.webBook.isRustNetworkAccessError
 import io.legado.app.model.SourceCallBack
 import io.legado.app.ui.login.SourceLoginJsExtensions
 import io.legado.app.utils.ArchiveUtils
@@ -251,8 +251,14 @@ class BookInfoViewModel(application: Application) : BaseViewModel(application) {
                         loadChapter(it, runPreUpdateJs, isFromBookInfo = true)
                     }
                 }.onError {
-                    AppLog.put("获取书籍信息失败\n${it.localizedMessage}", it)
-                    context.toastOnUi(R.string.error_get_book_info)
+                    if (it.isRustNetworkAccessError()) {
+                        AppLog.put("BookInfo detail network load failed for ${book.name}\n${it.localizedMessage}", it)
+                        context.toastOnUi("LoadInfoError:${it.localizedMessage}")
+                        return@onError
+                    }
+                    throw NoStackTraceException(
+                        "BookInfo Rust detail failed for ${book.name}: ${it.localizedMessage ?: it}"
+                    )
                 }.onFinally {
                     bookInfoLoadingData.postValue(false)
                 }
@@ -318,8 +324,14 @@ class BookInfoViewModel(application: Application) : BaseViewModel(application) {
                     chapterListData.postValue(it)
                 }.onError {
                     chapterListData.postValue(emptyList())
-                    AppLog.put("获取目录失败\n${it.localizedMessage}", it)
-                    context.toastOnUi(R.string.error_get_chapter_list)
+                    if (it.isRustNetworkAccessError()) {
+                        AppLog.put("BookInfo toc network load failed for ${book.name}\n${it.localizedMessage}", it)
+                        context.toastOnUi("LoadTocError:${it.localizedMessage}")
+                        return@onError
+                    }
+                    throw NoStackTraceException(
+                        "BookInfo Rust toc failed for ${book.name}: ${it.localizedMessage ?: it}"
+                    )
                 }.onFinally {
                     chapterLoadingData.postValue(false)
                 }
@@ -341,13 +353,19 @@ class BookInfoViewModel(application: Application) : BaseViewModel(application) {
             val fileNameNoExtension = if (book.author.isBlank()) book.name
             else "${book.name} 作者：${book.author}"
             book.downloadUrls!!.map {
-                val analyzeUrl = AnalyzeUrl(
-                    it, source = bookSource,
-                    coroutineContext = coroutineContext
+                val resolved = RustAnalyzerBridge.resolveUrl(
+                    url = it,
+                    source = bookSource,
+                    rulePath = "BookInfo.loadWebFile"
                 )
-                var mFileName = UrlUtil.getFileName(analyzeUrl)
+                val headers = resolved.headers.mapNotNull { pair ->
+                    val key = pair.getOrNull(0)?.takeIf { header -> header.isNotBlank() }
+                    val value = pair.getOrNull(1)
+                    if (key == null || value == null) null else key to value
+                }.toMap()
+                var mFileName = UrlUtil.getFileName(resolved.url, headers)
                     ?: fileNameNoExtension
-                analyzeUrl.type?.let { suffix ->
+                resolved.options["type"]?.toString()?.takeIf { suffix -> suffix.isNotBlank() }?.let { suffix ->
                     mFileName += ".${suffix}"
                 }
                 WebFile(it, mFileName)
@@ -625,13 +643,7 @@ class BookInfoViewModel(application: Application) : BaseViewModel(application) {
         val book = bookData.value ?: return
         execute {
             val java = SourceLoginJsExtensions(activity, source)
-            runScriptWithContext {
-                source.evalJS(click) {
-                    put("result", null)
-                    put("java", java)
-                    put("book", book)
-                }
-            }
+            evalBookInfoButtonClickByRust(source, book, java, click)
         }.onError {
             AppLog.put("${source.bookSourceName}: ${it.localizedMessage}", it)
             context.toastOnUi("$name click error\n${it.localizedMessage}")
@@ -658,4 +670,17 @@ class BookInfoViewModel(application: Application) : BaseViewModel(application) {
 
     }
 
+}
+
+fun evalBookInfoButtonClickByRust(
+    source: BookSource,
+    book: Book,
+    java: SourceLoginJsExtensions,
+    click: String
+) {
+    source.evalJS(click) {
+        put("result", null)
+        put("java", java)
+        put("book", book)
+    }
 }

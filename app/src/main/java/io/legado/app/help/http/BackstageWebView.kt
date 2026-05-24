@@ -31,15 +31,14 @@ import io.legado.app.help.webView.WebJsExtensions.Companion.nameJava
 import io.legado.app.help.webView.WebJsExtensions.Companion.nameSource
 import io.legado.app.help.webView.WebViewPool
 import io.legado.app.model.Debug
+import io.legado.app.model.webBook.RustAnalyzerBridge
+import io.legado.app.utils.GSON
 import io.legado.app.utils.get
 import io.legado.app.utils.runOnUI
 import kotlinx.coroutines.Dispatchers.IO
 import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeout
-import okhttp3.Protocol
-import okhttp3.Request
-import okhttp3.Response
 import org.apache.commons.text.StringEscapeUtils
 import splitties.init.appCtx
 import java.lang.ref.WeakReference
@@ -54,6 +53,7 @@ class BackstageWebView(
     private val html: String? = null,
     private val encode: String? = null,
     private val tag: String? = null,
+    private val source: BaseSource? = null,
     private val headerMap: HashMap<String, String>? = null,
     private val sourceRegex: String? = null,
     private val overrideUrlRegex: String? = null,
@@ -183,10 +183,22 @@ class BackstageWebView(
     }
 
     private fun setCookie(url: String) {
-        tag?.let {
-            Coroutine.async(executeContext = IO) {
-                val cookie = CookieManager.getInstance().getCookie(url)
-                CookieStore.setCookie(it, cookie)
+        val source = source ?: tag?.let { appDb.bookSourceDao.getBookSource(it) } ?: return
+        Coroutine.async(executeContext = IO) {
+            val cookie = CookieManager.getInstance().getCookie(url).orEmpty()
+            RustAnalyzerBridge.evalJs(
+                source = source,
+                script = "cookie.setCookie(source.getKey(), ${GSON.toJson(cookie)})",
+                rulePath = "BackstageWebView.syncCookie"
+            )
+        }.onError {
+            callback?.onError(
+                NoStackTraceException(
+                    "Rust analyzer WebView cookie sync failed for ${source.getTag()}: ${it.localizedMessage}"
+                )
+            )
+            runOnUI {
+                destroy()
             }
         }
     }
@@ -280,24 +292,7 @@ class BackstageWebView(
             }
 
             private fun buildStrResponse(content: String): StrResponse {
-                if (!isRedirect) {
-                    return StrResponse(url, content)
-                }
-                val originUrl = this@BackstageWebView.url ?: url
-                val originResponse = Response.Builder()
-                    .code(302)
-                    .request(Request.Builder().url(originUrl).build())
-                    .protocol(Protocol.HTTP_1_1)
-                    .message("Found")
-                    .build()
-                val response = Response.Builder()
-                    .code(200)
-                    .request(Request.Builder().url(url).build())
-                    .protocol(Protocol.HTTP_1_1)
-                    .message("OK")
-                    .priorResponse(originResponse)
-                    .build()
-                return StrResponse(response, content)
+                return StrResponse(url, content)
             }
         }
 

@@ -16,6 +16,7 @@ import io.legado.app.data.entities.rule.ExploreRule
 import io.legado.app.data.entities.rule.ReviewRule
 import io.legado.app.data.entities.rule.SearchRule
 import io.legado.app.data.entities.rule.TocRule
+import io.legado.app.exception.NoStackTraceException
 import io.legado.app.model.AudioPlay
 import io.legado.app.utils.GSON
 import io.legado.app.utils.fromJsonObject
@@ -53,7 +54,7 @@ data class BookSource(
     var enabledExplore: Boolean = true,
     // js库
     override var jsLib: String? = null,
-    // 启用okhttp CookieJAr 自动保存每次请求的cookie
+    // 启用 Rust 请求自动保存每次请求的 cookie
     @ColumnInfo(defaultValue = "0")
     override var enabledCookieJar: Boolean? = true,
     // 并发率
@@ -271,7 +272,7 @@ data class BookSource(
 
         @TypeConverter
         fun stringToExploreRule(json: String?) =
-            GSON.fromJsonObject<ExploreRule>(json).getOrNull()
+            parseRule<ExploreRule>(json, "ruleExplore")
 
         @TypeConverter
         fun searchRuleToString(searchRule: SearchRule?): String =
@@ -279,7 +280,7 @@ data class BookSource(
 
         @TypeConverter
         fun stringToSearchRule(json: String?) =
-            GSON.fromJsonObject<SearchRule>(json).getOrNull()
+            parseRule<SearchRule>(json, "ruleSearch")
 
         @TypeConverter
         fun bookInfoRuleToString(bookInfoRule: BookInfoRule?): String =
@@ -287,7 +288,7 @@ data class BookSource(
 
         @TypeConverter
         fun stringToBookInfoRule(json: String?) =
-            GSON.fromJsonObject<BookInfoRule>(json).getOrNull()
+            parseRule<BookInfoRule>(json, "ruleBookInfo")
 
         @TypeConverter
         fun tocRuleToString(tocRule: TocRule?): String =
@@ -295,7 +296,7 @@ data class BookSource(
 
         @TypeConverter
         fun stringToTocRule(json: String?) =
-            GSON.fromJsonObject<TocRule>(json).getOrNull()
+            parseRule<TocRule>(json, "ruleToc")
 
         @TypeConverter
         fun contentRuleToString(contentRule: ContentRule?): String =
@@ -303,13 +304,22 @@ data class BookSource(
 
         @TypeConverter
         fun stringToContentRule(json: String?) =
-            GSON.fromJsonObject<ContentRule>(json).getOrNull()
+            parseRule<ContentRule>(json, "ruleContent")
 
         @TypeConverter
         fun stringToReviewRule(json: String?): ReviewRule? = null
 
         @TypeConverter
         fun reviewRuleToString(reviewRule: ReviewRule?): String = "null"
+
+        private inline fun <reified T> parseRule(json: String?, ruleName: String): T? {
+            val value = json?.trim()?.takeIf { it.isNotEmpty() && it != "null" } ?: return null
+            return GSON.fromJsonObject<T>(value).getOrElse {
+                throw NoStackTraceException(
+                    "BookSource $ruleName JSON is invalid for Rust analyzer handoff: ${it.localizedMessage}"
+                )
+            }
+        }
 
     }
 }

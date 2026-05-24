@@ -15,6 +15,7 @@ import io.legado.app.data.appDb
 import io.legado.app.data.entities.BookChapter
 import io.legado.app.databinding.DialogContentEditBinding
 import io.legado.app.databinding.DialogEditTextBinding
+import io.legado.app.exception.NoStackTraceException
 import io.legado.app.help.book.BookHelp
 import io.legado.app.help.book.ContentProcessor
 import io.legado.app.help.book.isLocal
@@ -160,6 +161,11 @@ class ContentEditDialog : BaseDialogFragment(R.layout.dialog_content_edit) {
             }.onSuccess {
                 content = it
                 success.invoke(it ?: "")
+            }.onError {
+                throw NoStackTraceException(
+                    "ContentEdit Rust content failed for current chapter: " +
+                            (it.localizedMessage ?: it::class.java.name)
+                )
             }.onFinally {
                 loadStateLiveData.postValue(false)
             }

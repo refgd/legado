@@ -7,6 +7,7 @@ import io.legado.app.constant.AppConst
 import io.legado.app.constant.AppLog
 import io.legado.app.constant.PreferKey
 import io.legado.app.data.appDb
+import io.legado.app.exception.NoStackTraceException
 import io.legado.app.utils.GSON
 import io.legado.app.utils.canvasrecorder.CanvasRecorderFactory
 import io.legado.app.utils.defaultSharedPreferences
@@ -45,7 +46,6 @@ object AppConfig : SharedPreferences.OnSharedPreferenceChangeListener {
     const val DEFAULT_AI_SYSTEM_PROMPT =
         "你是阅读应用内的 AI 助手。回答直接、准确、简洁。需要真实应用数据时必须优先调用工具，工具返回的数据优先级高于你的记忆，不允许编造工具未返回的结果。用户询问书架、书籍、作者、阅读记录、书籍简介、书源、分组、标签、分类方案时，必须先调用 query_bookshelf、get_bookshelf_book_info、manage_bookshelf_group 或 manage_bookshelf_tag，不要只说“我先看看”却不调用工具。用户要求创建、修改或调试书源时，你要像一个小型书源 agent 一样闭环执行：新建书源先调用 create_book_source(save=false) 生成草稿；修改已有书源先调用 get_book_source 读取完整 JSON；缺少页面结构时调用 fetch_source_html 获取搜索页、详情页、目录页或正文页 HTML；每次调试失败后都调用 update_book_source(save=false) 按日志和 HTML 修正规则，可传 patch，也可直接传 ruleToc/ruleContent/searchUrl 等字段；再调用 debug_book_source 调试，优先使用用户给出的详情页 URL、目录 URL、正文 URL 或关键词；最多循环 3 次。不要在第一次调试前询问“是否继续”，也不要只输出未经调试的 JSON。只有搜索、详情、目录、正文主要链路通过，或达到 3 次仍失败时，才给出最终结果和剩余失败点。只有用户明确要求保存、导入或完成时，才调用 update_book_source(save=true) 或 create_book_source(save=true) 写入本地书源库。用户要求整理书架时，顶层书架使用分组，分组内的小分类使用书籍标签；未分标签的书按“全部”处理。批量设置标签、重命名标签、移动分组或删除分组前，先查询书架并给出方案，用户确认后再调用写入工具。任何情况下都不允许删除书籍。"
 
-    val isCronet = appCtx.getPrefBoolean(PreferKey.cronet)
     var useAntiAlias = appCtx.getPrefBoolean(PreferKey.antiAlias)
     var useHighRefreshRate = appCtx.getPrefBoolean(PreferKey.highBrush, true)
     var userAgent: String = getPrefUserAgent()
@@ -161,7 +161,17 @@ object AppConfig : SharedPreferences.OnSharedPreferenceChangeListener {
     private var _hostMap: Map<String, Any?>? = null
     val hostMap: Map<String, Any?>
         get() = _hostMap ?: run {
-            val cache = GSON.fromJsonObject<Map<String, Any?>>(customHosts).getOrNull() ?: emptyMap()
+            val rawHosts = customHosts.orEmpty()
+            val cache = if (rawHosts.isBlank()) {
+                emptyMap()
+            } else {
+                GSON.fromJsonObject<Map<String, Any?>>(rawHosts).getOrElse {
+                    throw NoStackTraceException(
+                        "AppConfig custom DNS hosts JSON is invalid for Rust analyzer network handoff: " +
+                            (it.localizedMessage ?: it::class.java.name)
+                    )
+                }
+            }
             _hostMap = cache
             cache
         }
@@ -1556,7 +1566,7 @@ object AppConfig : SharedPreferences.OnSharedPreferenceChangeListener {
     private fun getPrefUserAgent(): String {
         val ua = appCtx.getPrefString(PreferKey.userAgent)
         if (ua.isNullOrBlank()) {
-            return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/" + BuildConfig.Cronet_Main_Version + " Safari/537.36"
+            return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
         }
         return ua
     }

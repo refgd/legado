@@ -10,15 +10,12 @@ import androidx.preference.Preference
 import io.legado.app.R
 import io.legado.app.constant.PreferKey
 import io.legado.app.help.config.AppConfig
-import io.legado.app.help.http.addHeaders
-import io.legado.app.help.http.newCallResponse
-import io.legado.app.help.http.okHttpClient
 import io.legado.app.lib.dialogs.selector
 import io.legado.app.lib.prefs.SwitchPreference
 import io.legado.app.lib.prefs.fragment.PreferenceFragment
 import io.legado.app.lib.theme.primaryColor
 import io.legado.app.model.BookCover
-import io.legado.app.model.analyzeRule.AnalyzeUrl
+import io.legado.app.model.webBook.RustAnalyzerBridge
 import io.legado.app.ui.file.HandleFileContract
 import io.legado.app.utils.FileUtils
 import io.legado.app.utils.MD5Utils
@@ -204,14 +201,17 @@ class WelcomeConfigFragment : PreferenceFragment(),
             lifecycleScope.launch {
                 kotlin.runCatching {
                     appCtx.toastOnUi("下载图片中...")
-                    val analyzeUrl = AnalyzeUrl(uri.toString())
-                    val url = analyzeUrl.urlNoQuery
+                    val res = RustAnalyzerBridge.fetchRawUrl(
+                        uri.toString(),
+                        "WelcomeConfigFragment.coverImage"
+                    )
+                    val url = res.url
                     var file = requireContext().externalFiles
-                    val res = okHttpClient.newCallResponse(0) {
-                        addHeaders(analyzeUrl.headerMap)
-                        url(url)
-                    }
-                    val contentType = res.header("Content-Type") ?: "image/jpeg"
+                    val contentType = res.contentType
+                        ?: res.headers.entries.firstOrNull {
+                            it.key.equals("Content-Type", ignoreCase = true)
+                        }?.value
+                        ?: "image/jpeg"
                     val imageType = when {
                         contentType.contains("png", ignoreCase = true) -> "png"
                         contentType.contains("gif", ignoreCase = true) -> "gif"
@@ -225,10 +225,8 @@ class WelcomeConfigFragment : PreferenceFragment(),
                     }
                     val fileName = MD5Utils.md5Encode(url) + suffix
                     file = FileUtils.createFileIfNotExist(file, "covers", fileName)
-                    res.body.byteStream().use { inputStream ->
-                        FileOutputStream(file).use { outputStream ->
-                            inputStream.copyTo(outputStream)
-                        }
+                    FileOutputStream(file).use { outputStream ->
+                        outputStream.write(res.body)
                     }
                     putPrefString(preferenceKey, file.absolutePath)
                 }.onSuccess {

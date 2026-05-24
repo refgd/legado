@@ -12,6 +12,7 @@ import io.legado.app.data.entities.BookProgress
 import io.legado.app.data.entities.BookProgressComparison
 import io.legado.app.data.entities.BookSource
 import io.legado.app.data.entities.ReadRecord
+import io.legado.app.exception.NoStackTraceException
 import io.legado.app.help.AppWebDav
 import io.legado.app.help.ReadRecordDailyHelper
 import io.legado.app.help.book.BookHelp
@@ -690,7 +691,9 @@ object ReadBook : CoroutineScope by MainScope() {
                 )
             }
         }.onError {
-            AppLog.put("加载正文出错\n${it.localizedMessage}")
+            throw NoStackTraceException(
+                "ReadBook Rust content failed at chapter $index: ${it.localizedMessage ?: it}"
+            )
         }
     }
 
@@ -708,7 +711,9 @@ object ReadBook : CoroutineScope by MainScope() {
                 contentLoadFinishAwait(book, chapter, content, upContent, resetPageOffset)
                 success?.invoke()
             } catch (e: Exception) {
-                AppLog.put("加载正文出错\n${e.localizedMessage}")
+                throw NoStackTraceException(
+                    "ReadBook Rust content failed at chapter $index: ${e.localizedMessage ?: e}"
+                )
             } finally {
                 removeLoading(index)
             }

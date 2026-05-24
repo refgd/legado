@@ -1,10 +1,10 @@
 package io.legado.app.help.ai
 
 import io.legado.app.help.config.AppConfig
-import io.legado.app.help.http.addHeaders
-import io.legado.app.help.http.newCallResponse
-import io.legado.app.help.http.okHttpClient
-import io.legado.app.help.http.postJson
+import io.legado.app.constant.BookSourceType
+import io.legado.app.data.entities.BookSource
+import io.legado.app.model.webBook.RustAnalyzerBridge
+import io.legado.app.utils.GSON
 import kotlinx.coroutines.Dispatchers.IO
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -95,15 +95,9 @@ object AiTavilyTool {
             appendStringArray(this, "include_domains", arguments?.optJSONArray("includeDomains"))
             appendStringArray(this, "exclude_domains", arguments?.optJSONArray("excludeDomains"))
         }
-        val response = okHttpClient.newCallResponse {
-            url(normalizeUrl(AppConfig.aiTavilyBaseUrl))
-            addHeader("Accept", "application/json")
-            addHeader("Authorization", "Bearer ${AppConfig.aiTavilyApiKey}")
-            postJson(requestBody.toString())
-        }
-        response.use { raw ->
-            val body = raw.body?.string().orEmpty()
-            if (!raw.isSuccessful) {
+        val raw = fetchSearchResponse(requestBody.toString())
+        raw.body.toString(Charsets.UTF_8).let { body ->
+            if (raw.code !in 200..299) {
                 return@withContext errorJson(
                     extractError(body).ifBlank { "${raw.code} ${raw.message}" },
                     body
@@ -136,6 +130,30 @@ object AiTavilyTool {
             }.toString()
         }
     }
+
+    private fun fetchSearchResponse(body: String) = RustAnalyzerBridge.fetchRawResponse(
+        source = BookSource(
+            bookSourceUrl = normalizeUrl(AppConfig.aiTavilyBaseUrl),
+            bookSourceName = "AI Tavily",
+            bookSourceType = BookSourceType.default,
+            header = GSON.toJson(
+                mapOf(
+                    "Accept" to "application/json",
+                    "Authorization" to "Bearer ${AppConfig.aiTavilyApiKey}",
+                    "Content-Type" to "application/json; charset=UTF-8"
+                )
+            )
+        ),
+        url = "${normalizeUrl(AppConfig.aiTavilyBaseUrl)},${
+            GSON.toJson(
+                mapOf(
+                    "method" to "POST",
+                    "body" to body
+                )
+            )
+        }",
+        rulePath = "AiTavilyTool.search"
+    )
 
     private fun appendStringArray(target: JSONObject, key: String, source: JSONArray?) {
         if (source == null || source.length() == 0) return

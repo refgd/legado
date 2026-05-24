@@ -12,7 +12,7 @@ import io.legado.app.base.BaseDialogFragment
 import io.legado.app.databinding.DialogPhotoViewBinding
 import io.legado.app.help.book.BookHelp
 import io.legado.app.help.glide.ImageLoader
-import io.legado.app.help.glide.OkHttpModelLoader
+import io.legado.app.help.glide.RustImageModelLoader
 import io.legado.app.model.BookCover
 import io.legado.app.model.ImageProvider
 import io.legado.app.model.ReadBook
@@ -61,7 +61,7 @@ class PhotoDialog() : BaseDialogFragment(R.layout.dialog_photo_view) {
         } else {
             ImageLoader.load(requireContext(), src).apply {
                 arguments.getString("sourceOrigin")?.let { sourceOrigin ->
-                    apply(RequestOptions().set(OkHttpModelLoader.sourceOriginOption, sourceOrigin))
+                    apply(RequestOptions().set(RustImageModelLoader.sourceOriginOption, sourceOrigin))
                 }
             }.error(if (isBook) BookCover.defaultDrawable else R.drawable.image_loading_error)
                 .dontTransform()

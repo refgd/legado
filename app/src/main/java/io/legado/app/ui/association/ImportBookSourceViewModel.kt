@@ -6,7 +6,6 @@ import androidx.lifecycle.MutableLiveData
 import com.jayway.jsonpath.JsonPath
 import io.legado.app.R
 import io.legado.app.base.BaseViewModel
-import io.legado.app.constant.AppConst
 import io.legado.app.constant.AppLog
 import io.legado.app.constant.AppPattern
 import io.legado.app.data.appDb
@@ -15,12 +14,10 @@ import io.legado.app.data.entities.BookSourcePart
 import io.legado.app.exception.NoStackTraceException
 import io.legado.app.help.book.ContentProcessor
 import io.legado.app.help.config.AppConfig
-import io.legado.app.help.http.decompressed
-import io.legado.app.help.http.newCallResponseBody
-import io.legado.app.help.http.okHttpClient
 import io.legado.app.help.source.SourceHelp
 import io.legado.app.model.RuleUpdate
 import io.legado.app.utils.GSON
+import io.legado.app.utils.RustRemoteFetch
 import io.legado.app.utils.fromJsonArray
 import io.legado.app.utils.fromJsonObject
 import io.legado.app.utils.inputStream
@@ -193,14 +190,7 @@ class ImportBookSourceViewModel(app: Application) : BaseViewModel(app) {
             RuleUpdate.cacheBookSourceMap.remove(url)
             return
         }
-        okHttpClient.newCallResponseBody {
-            if (url.endsWith("#requestWithoutUA")) {
-                url(url.substringBeforeLast("#requestWithoutUA"))
-                header(AppConst.UA_NAME, "null")
-            } else {
-                url(url)
-            }
-        }.decompressed().byteStream().use {
+        RustRemoteFetch.bytes(url, "ImportBookSourceViewModel.importSourceUrl").body.inputStream().use {
             GSON.fromJsonArray<BookSource>(it).getOrThrow().let { list ->
                 val source = list.firstOrNull() ?: return@let
                 if (source.bookSourceUrl.isEmpty()) {

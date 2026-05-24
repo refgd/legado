@@ -18,17 +18,16 @@ import androidx.appcompat.widget.AppCompatSpinner
 import androidx.collection.LruCache
 import androidx.core.view.children
 import com.google.android.flexbox.FlexboxLayout
-import com.script.rhino.runScriptWithContext
 import io.legado.app.R
 import io.legado.app.base.adapter.ItemViewHolder
 import io.legado.app.base.adapter.RecyclerAdapter
-import io.legado.app.constant.AppLog
 import io.legado.app.data.appDb
 import io.legado.app.data.entities.BaseSource
 import io.legado.app.data.entities.BookSource
 import io.legado.app.data.entities.BookSourcePart
 import io.legado.app.data.entities.rule.ExploreKind
 import io.legado.app.data.entities.rule.ExploreKind.Type
+import io.legado.app.exception.NoStackTraceException
 import io.legado.app.databinding.ItemFilletTextBinding
 import io.legado.app.databinding.ItemFindBookBinding
 import io.legado.app.databinding.ItemFilletSelectorSingleBinding
@@ -40,6 +39,7 @@ import io.legado.app.lib.theme.applyUiBodyTypefaceDeep
 import io.legado.app.lib.theme.accentColor
 import io.legado.app.lib.theme.uiTypeface
 import io.legado.app.ui.login.SourceLoginActivity
+import io.legado.app.ui.login.RustPlatformAction
 import io.legado.app.ui.login.SourceLoginJsExtensions
 import io.legado.app.ui.widget.dialog.TextDialog
 import io.legado.app.ui.widget.text.AccentTextView
@@ -504,29 +504,15 @@ class ExploreAdapter(context: Context, val callBack: CallBack) :
 
     private suspend fun evalUiJs(jsStr: String, source: BookSource?, infoMap: InfoMap): String? {
         val source = source ?: return null
-        return try {
-            runScriptWithContext {
-                source.evalJS(jsStr) {
-                    put("infoMap", infoMap)
-                }.toString()
-            }
-        } catch (e: Exception) {
-            AppLog.put(source.getTag() + " exploreUi err:" + (e.localizedMessage ?: e.toString()), e)
-            null
-        }
+        return evalExploreUiJsByRust(source, infoMap, jsStr)
     }
 
     private suspend fun evalButtonClick(jsStr: String, source: BaseSource?, infoMap: InfoMap, name: String, java: SourceLoginJsExtensions) {
         val source = source ?: return
         try {
-            runScriptWithContext {
-                source.evalJS(jsStr) {
-                    put("java", java)
-                    put("infoMap", infoMap)
-                }
-            }
+            evalExploreButtonClickByRust(source, infoMap, java, jsStr)
         } catch (e: Exception) {
-            AppLog.put("ExploreUI Button $name JavaScript error", e)
+            throw NoStackTraceException("ExploreUI Button $name Rust JavaScript failed: ${e.localizedMessage ?: e}")
         }
     }
 
@@ -697,4 +683,26 @@ class ExploreAdapter(context: Context, val callBack: CallBack) :
         fun deleteSource(source: BookSourcePart)
         fun searchBook(bookSource: BookSourcePart)
     }
+}
+
+fun evalExploreUiJsByRust(
+    source: BookSource,
+    infoMap: InfoMap,
+    jsStr: String
+): String {
+    return source.evalJS(jsStr) {
+        put("infoMap", infoMap)
+    }.toString()
+}
+
+fun evalExploreButtonClickByRust(
+    source: BaseSource,
+    infoMap: InfoMap,
+    java: SourceLoginJsExtensions,
+    jsStr: String
+) {
+    source.evalJS(jsStr) {
+        put("java", java)
+        put("infoMap", infoMap)
+    }.also { RustPlatformAction.handle(it, java) }
 }

@@ -20,9 +20,10 @@ import io.legado.app.base.BaseFragment
 import io.legado.app.constant.AppConst
 import io.legado.app.data.entities.BaseSource
 import io.legado.app.databinding.FragmentWebViewLoginBinding
-import io.legado.app.help.http.CookieStore
 import io.legado.app.help.webView.PooledWebView
 import io.legado.app.lib.theme.accentColor
+import io.legado.app.model.webBook.RustAnalyzerBridge
+import io.legado.app.utils.GSON
 import io.legado.app.utils.NetworkUtils
 import io.legado.app.utils.gone
 import io.legado.app.utils.longSnackbar
@@ -88,13 +89,13 @@ class WebViewLoginFragment : BaseFragment(R.layout.fragment_web_view_login) {
         webView.webViewClient = object : WebViewClient() {
             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                 val cookie = cookieManager.getCookie(url)
-                CookieStore.setCookie(source.getKey(), cookie)
+                syncCookieToRust(source, cookie)
                 super.onPageStarted(view, url, favicon)
             }
 
             override fun onPageFinished(view: WebView?, url: String?) {
                 val cookie = cookieManager.getCookie(url)
-                CookieStore.setCookie(source.getKey(), cookie)
+                syncCookieToRust(source, cookie)
                 if (checking) {
                     activity?.finish()
                 }
@@ -153,6 +154,14 @@ class WebViewLoginFragment : BaseFragment(R.layout.fragment_web_view_login) {
         val loginUrl = source.loginUrl ?: return
         val absoluteUrl = NetworkUtils.getAbsoluteURL(source.getKey(), loginUrl)
         currentWebView?.loadUrl(absoluteUrl, viewModel.headerMap)
+    }
+
+    private fun syncCookieToRust(source: BaseSource, cookie: String?) {
+        RustAnalyzerBridge.evalJs(
+            source = source,
+            script = "cookie.setCookie(source.getKey(), ${GSON.toJson(cookie.orEmpty())})",
+            rulePath = "WebViewLoginFragment.syncCookie"
+        )
     }
 
     override fun onDestroy() {

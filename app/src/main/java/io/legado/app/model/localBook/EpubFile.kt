@@ -2,7 +2,6 @@ package io.legado.app.model.localBook
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import android.graphics.Color
 import android.graphics.Typeface
 import android.os.ParcelFileDescriptor
 import android.text.TextUtils
@@ -15,6 +14,7 @@ import io.legado.app.help.book.BookHelp
 import io.legado.app.help.book.update
 import io.legado.app.help.config.AppConfig
 import io.legado.app.utils.FileUtils
+import io.legado.app.utils.GSON
 import io.legado.app.utils.MD5Utils
 import io.legado.app.utils.SvgUtils
 import io.legado.app.utils.compressPreservingAlpha
@@ -24,16 +24,12 @@ import io.legado.app.utils.isXml
 import io.legado.app.utils.printOnDebug
 import io.legado.app.utils.preferredCoverExtension
 import io.legado.app.ui.book.read.page.provider.ChapterProvider
+import io.legado.app.model.webBook.RustAnalyzerBridge
 import me.ag2s.epublib.domain.EpubBook
 import me.ag2s.epublib.domain.Resource
 import me.ag2s.epublib.domain.TOCReference
 import me.ag2s.epublib.epub.EpubReader
 import me.ag2s.epublib.util.zip.AndroidZipFile
-import org.jsoup.Jsoup
-import org.jsoup.nodes.Document
-import org.jsoup.nodes.Element
-import org.jsoup.parser.Parser
-import org.jsoup.select.Elements
 import java.io.ByteArrayInputStream
 import java.io.File
 import java.io.FileOutputStream
@@ -44,7 +40,6 @@ import java.io.ObjectOutputStream
 import java.net.URI
 import java.net.URLDecoder
 import java.nio.charset.Charset
-import java.util.IdentityHashMap
 import java.util.Locale
 import java.util.concurrent.Executors
 import kotlin.system.measureTimeMillis
@@ -59,6 +54,14 @@ class EpubFile(var book: Book) {
 
     private data class NativeViewport(val width: Int, val height: Int, val exact: Boolean)
 
+    private data class EpubBody(
+        var html: String,
+        var style: String,
+        var background: String,
+        val documentHtml: String,
+        val title: String
+    )
+
     companion object : BaseLocalBookParse {
         const val NATIVE_CONTENT_FLAG = "<epub-native"
         const val NATIVE_LAYOUT_FLAG = "data-href="
@@ -67,8 +70,6 @@ class EpubFile(var book: Book) {
         const val INLINE_STYLE_MARK = '\uE10C'
         private const val NATIVE_LAYOUT_DISK_CACHE_VERSION = 5
         private const val ENABLE_EPUB_DEBUG_DUMP = false
-        private val scriptBlockRegex = Regex("(?is)<script\\b[^>]*>.*?</script>")
-        private val scriptSelfClosingRegex = Regex("(?is)<script\\b[^>]*/>")
         private val maxNativeDomCache: Int
             get() = if (Runtime.getRuntime().maxMemory() <= 256L * 1024L * 1024L) 160 else 320
         private val maxNativeLayoutCache: Int
@@ -221,21 +222,7 @@ class EpubFile(var book: Book) {
     private val fontFaceMatchCache = linkedMapOf<String, EpubFontFace?>()
     private val footnoteCache = linkedMapOf<String, EpubFootnote?>()
     private val footnoteSourceCache = linkedMapOf<String, FootnoteSource?>()
-    private val footnoteDocumentCache = object : LinkedHashMap<String, Document>(32, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Document>?): Boolean {
-            return size > 80
-        }
-    }
     private val footnoteIdHrefIndex = linkedMapOf<String, String>()
-    private val footnoteClassNames = setOf(
-        "footnote",
-        "endnote",
-        "note",
-        "noteref",
-        "duokan-footnote",
-        "duokan-footnote-content",
-        "duokan-footnote-item"
-    )
     private var footnoteIndexBuilt = false
     private val scheduledNearbyPreloadKeys = linkedSetOf<String>()
     private var nativeLayoutWidth = 0
@@ -312,7 +299,6 @@ class EpubFile(var book: Book) {
         footnoteIdHrefIndex.clear()
         footnoteCache.clear()
         footnoteSourceCache.clear()
-        footnoteDocumentCache.clear()
         cssTextCache.clear()
         cssRuleCache.clear()
         nativeDomCache.clear()
@@ -350,9 +336,9 @@ class EpubFile(var book: Book) {
         val isLastChapter = nextChapterFirstResourceHref.isBlank()
         val startFragmentId = chapter.startFragmentId
         val endFragmentId = chapter.endFragmentId
-        val elements = Elements()
         val rawResources = linkedMapOf<String, String>()
         val nativeHrefs = arrayListOf<String>()
+        val debugBodies = arrayListOf<String>()
         fun collectRawResource(res: Resource) {
             nativeHrefs.add(res.href)
             if (ENABLE_EPUB_DEBUG_DUMP) {
@@ -384,30 +370,22 @@ class EpubFile(var book: Book) {
             // Fragment slicing would make chapters sharing one XHTML overwrite each other.
             val body = getBody(res, null, null)
             if (ENABLE_EPUB_DEBUG_DUMP) {
-                elements.add(
+                debugBodies.add(
                     when {
-                        index == 0 -> getBody(res, startFragmentId, endFragmentId)
+                        index == 0 -> getBody(res, startFragmentId, endFragmentId).outerHtml()
                         index == chapterResources.lastIndex && includeNextChapterResource && !isLastChapter &&
-                            res.href == nextChapterFirstResourceHref -> getBody(res, null, endFragmentId)
-                        else -> body
+                            res.href == nextChapterFirstResourceHref -> getBody(res, null, endFragmentId).outerHtml()
+                        else -> body.outerHtml()
                     }
                 )
             }
         }
-        //title标签中的内容不需要显示在正文中，去除
-        elements.select("title").remove()
-        elements.select("[style*=display:none], [style*=display: none]").remove()
-        elements.select("img[src=\"cover.jpeg\"]").forEachIndexed { i, it ->
-            if (i > 0) it.remove()
-        }
-        val tag = Book.rubyTag
-        if (book.getDelTag(tag)) {
-            elements.select("rp, rt").remove()
-        }
         val html = if (ENABLE_EPUB_DEBUG_DUMP) {
-            elements.joinToString("\n") { element ->
-                element.html().trim()
-            }.trim()
+            RustAnalyzerBridge.epubDebugChapterHtml(
+                debugBodies,
+                book.getDelTag(Book.rubyTag),
+                "EpubFile.debugChapterHtml"
+            )
         } else {
             ""
         }
@@ -432,26 +410,34 @@ class EpubFile(var book: Book) {
         nextChapterFirstResourceHref: String,
         isLastChapter: Boolean
     ): String {
-        val elements = Elements()
+        val bodies = arrayListOf<String>()
         val rawResources = linkedMapOf<String, String>()
         chapterResources.forEachIndexed { index, res ->
             if (ENABLE_EPUB_DEBUG_DUMP) {
                 rawResources[res.href] = String(res.data, mCharset)
             }
-            elements.add(
+            bodies.add(
                 when {
                     index == 0 && index == chapterResources.lastIndex ->
-                        getBody(res, startFragmentId, endFragmentId, buildNativeDom = false)
+                        getBody(res, startFragmentId, endFragmentId, buildNativeDom = false).outerHtml()
                     index == 0 ->
-                        getBody(res, startFragmentId, null, buildNativeDom = false)
+                        getBody(res, startFragmentId, null, buildNativeDom = false).outerHtml()
                     index == chapterResources.lastIndex && includeNextChapterResource && !isLastChapter &&
                         res.href == nextChapterFirstResourceHref -> getBody(res, null, endFragmentId, buildNativeDom = false)
-                    else -> getBody(res, null, null, buildNativeDom = false)
+                        .outerHtml()
+                    else -> getBody(res, null, null, buildNativeDom = false).outerHtml()
                 }
             )
         }
-        val lines = elements.asSequence()
-            .flatMap { element -> element.readableLines().asSequence() }
+        val deleteRuby = book.getDelTag(Book.rubyTag)
+        val lines = bodies.asSequence()
+            .flatMap { body ->
+                RustAnalyzerBridge.epubReadableLines(
+                    body,
+                    deleteRuby,
+                    "EpubFile.readableLines"
+                ).asSequence()
+            }
             .map { it.trim() }
             .filter { it.isNotBlank() }
             .toMutableList()
@@ -463,125 +449,6 @@ class EpubFile(var book: Book) {
             dumpEpubChapterDebug(chapter, rawResources, text)
         }
         return READABLE_CONTENT_VERSION_FLAG + text
-    }
-
-    private data class ReadableInlineStyle(
-        val underline: Boolean = false,
-        val bold: Boolean = false,
-        val italic: Boolean = false,
-        val strike: Boolean = false,
-        val script: Int = 0
-    )
-
-    private fun Element.readableLines(): List<String> {
-        val lines = arrayListOf<String>()
-        fun appendStyleStart(builder: StringBuilder, style: ReadableInlineStyle) {
-            if (style.bold) builder.append(INLINE_STYLE_MARK).append('B')
-            if (style.italic) builder.append(INLINE_STYLE_MARK).append('I')
-            if (style.underline) builder.append(INLINE_STYLE_MARK).append('U')
-            if (style.strike) builder.append(INLINE_STYLE_MARK).append('S')
-            if (style.script > 0) builder.append(INLINE_STYLE_MARK).append('P')
-            if (style.script < 0) builder.append(INLINE_STYLE_MARK).append('D')
-        }
-
-        fun appendStyleEnd(builder: StringBuilder, style: ReadableInlineStyle) {
-            if (style.script < 0) builder.append(INLINE_STYLE_MARK).append('d')
-            if (style.script > 0) builder.append(INLINE_STYLE_MARK).append('p')
-            if (style.strike) builder.append(INLINE_STYLE_MARK).append('s')
-            if (style.underline) builder.append(INLINE_STYLE_MARK).append('u')
-            if (style.italic) builder.append(INLINE_STYLE_MARK).append('i')
-            if (style.bold) builder.append(INLINE_STYLE_MARK).append('b')
-        }
-
-        fun appendText(builder: StringBuilder, value: String, style: ReadableInlineStyle) {
-            val normalized = value
-                .replace(INLINE_STYLE_MARK.toString(), "")
-                .replace(Regex("\\s+"), " ")
-            if (normalized.isBlank()) return
-            if (builder.isNotEmpty() && !builder.endsWith(' ') && !normalized.startsWith(' ')) {
-                builder.append(' ')
-            }
-            appendStyleStart(builder, style)
-            builder.append(normalized)
-            appendStyleEnd(builder, style)
-        }
-
-        fun Element.inlineStyle(parent: ReadableInlineStyle): ReadableInlineStyle {
-            val tag = normalName()
-            val declarations = EpubCss.declarations(attr("style"))
-            val textDecoration = listOf(
-                declarations["text-decoration"],
-                declarations["text-decoration-line"]
-            ).joinToString(" ").lowercase()
-            val fontWeight = declarations["font-weight"].orEmpty().lowercase()
-            val fontStyle = declarations["font-style"].orEmpty().lowercase()
-            val verticalAlign = declarations["vertical-align"].orEmpty().lowercase()
-            val cssBold = fontWeight == "bold" || fontWeight.toIntOrNull()?.let { it >= 600 } == true
-            val script = when {
-                tag == "sup" || verticalAlign == "super" || verticalAlign == "sup" -> 1
-                tag == "sub" || verticalAlign == "sub" -> -1
-                else -> parent.script
-            }
-            return parent.copy(
-                underline = parent.underline || tag == "u" || textDecoration.contains("underline"),
-                bold = parent.bold || tag == "b" || tag == "strong" || cssBold,
-                italic = parent.italic || tag == "i" || tag == "em" || fontStyle == "italic" || fontStyle == "oblique",
-                strike = parent.strike || tag == "s" || tag == "del" || tag == "strike" ||
-                    textDecoration.contains("line-through"),
-                script = script
-            )
-        }
-
-        fun walk(node: org.jsoup.nodes.Node, builder: StringBuilder, style: ReadableInlineStyle) {
-            when (node) {
-                is org.jsoup.nodes.TextNode -> appendText(builder, node.text(), style)
-                is Element -> {
-                    val childStyle = node.inlineStyle(style)
-                    when (node.normalName()) {
-                        "title", "script", "style" -> return
-                        "br" -> {
-                            builder.toString().trim().takeIf { it.isNotBlank() }?.let { lines.add(it) }
-                            builder.setLength(0)
-                        }
-                        "img" -> {
-                            builder.toString().trim().takeIf { it.isNotBlank() }?.let { lines.add(it) }
-                            builder.setLength(0)
-                            val src = node.attr("src").trim()
-                            if (src.isNotBlank() && node.attr("data-epub-background") != "true") {
-                                lines.add("""<img src="$src">""")
-                            }
-                        }
-                        else -> {
-                            if (node.isReadableBlock() && builder.isNotBlank()) {
-                                lines.add(builder.toString().trim())
-                                builder.setLength(0)
-                            }
-                            node.childNodes().forEach { child -> walk(child, builder, childStyle) }
-                            if (node.isReadableBlock()) {
-                                builder.toString().trim().takeIf { it.isNotBlank() }?.let { lines.add(it) }
-                                builder.setLength(0)
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        cleanReadableEpubElement(this)
-        val builder = StringBuilder()
-        childNodes().forEach { child -> walk(child, builder, ReadableInlineStyle()) }
-        builder.toString().trim().takeIf { it.isNotBlank() }?.let { lines.add(it) }
-        return lines
-    }
-
-    private fun Element.isReadableBlock(): Boolean {
-        return normalName() in setOf(
-            "address", "article", "aside", "blockquote", "center", "dd", "dialog",
-            "div", "dl", "dt", "fieldset", "figcaption", "figure", "footer", "form",
-            "h1", "h2", "h3", "h4", "h5", "h6", "header", "hr", "li", "main", "nav",
-            "ol", "p", "pre", "section", "table", "tbody", "td", "tfoot", "th",
-            "thead", "tr", "ul"
-        )
     }
 
     private fun String.isDuplicateReadableTitle(title: String): Boolean {
@@ -598,25 +465,6 @@ class EpubFile(var book: Book) {
         return contentTitle == chapterTitle ||
             contentTitle.contains(chapterTitle) ||
             chapterTitle.contains(contentTitle)
-    }
-
-    private fun cleanReadableEpubElement(element: Element) {
-        element.select("title, script, style").remove()
-        element.select("[style*=display:none], [style*=display: none]").remove()
-        element.select("[data-epub-page-bg]").remove()
-        element.select("img[data-epub-background=true]").remove()
-        var coverSeen = false
-        element.select("img[src=\"cover.jpeg\"]").forEach { image ->
-            if (coverSeen) {
-                image.remove()
-            } else {
-                coverSeen = true
-            }
-        }
-        val tag = Book.rubyTag
-        if (book.getDelTag(tag)) {
-            element.select("rp, rt").remove()
-        }
     }
 
     private fun collectChapterResources(
@@ -660,119 +508,101 @@ class EpubFile(var book: Book) {
         startFragmentId: String?,
         endFragmentId: String?,
         buildNativeDom: Boolean = true
-    ): Element {
+    ): EpubBody {
         /**
          * <image width="1038" height="670" xlink:href="..."/>
          * ...titlepage.xhtml
          * 大多数epub文件的封面页都会带有cover，可以一定程度上解决封面读取问题
         */
-        // Jsoup可能会修复不规范的xhtml文件 解析处理后再获取
         val rawHtml = String(res.data, mCharset)
-            .replace(scriptBlockRegex, "")
-            .replace(scriptSelfClosingRegex, "")
-        var doc = Jsoup.parse(rawHtml)
-        var bodyElement = doc.body()
-        doc.select("script").remove()
-        doc.hideEpubFootnotes()
-        // 获取body对应的文本
-        var bodyString = bodyElement.outerHtml()
-        val originBodyString = bodyString
-        /**
-         * 某些xhtml文件 章节标题和内容不在一个节点或者不是兄弟节点
-         * <div>
-         *    <a class="mulu1>目录1</a>
-         * </div>
-         * <p>....</p>
-         * <div>
-         *    <a class="mulu2>目录2</a>
-         * </div>
-         * <p>....</p>
-         * 先找到FragmentId对应的Element 然后直接截取之间的html
-         */
-        if (!startFragmentId.isNullOrBlank()) {
-            bodyElement.getElementById(startFragmentId)?.outerHtml()?.let {
-                val tagStart = it.substringBefore("\n")
-                bodyString = tagStart + bodyString.substringAfter(tagStart)
+        val preparedBody = RustAnalyzerBridge.epubBodyHtml(
+            html = rawHtml,
+            startFragmentId = startFragmentId,
+            endFragmentId = endFragmentId,
+            rulePath = "EpubFile.bodyHtml"
+        )
+        val body = EpubBody(
+            html = preparedBody.bodyHtml.ifBlank { preparedBody.html },
+            style = preparedBody.bodyStyle,
+            background = preparedBody.bodyBackground,
+            documentHtml = preparedBody.documentHtml.ifBlank { preparedBody.html },
+            title = preparedBody.title
+        )
+        body.applyEpubCss(res)
+        body.html =
+            RustAnalyzerBridge.epubInheritedStyles(
+                body.html,
+                body.style,
+                "EpubFile.inheritedStyles"
+            )
+        body.html =
+            RustAnalyzerBridge.epubMediaPlaceholders(
+                body.html,
+                res.href,
+                "EpubFile.mediaPlaceholders"
+            )
+        body.html =
+            RustAnalyzerBridge.epubInlineStyles(
+                body.html,
+                body.style,
+                "EpubFile.inlineStyles"
+            )
+        val backgroundHref = RustAnalyzerBridge.epubBodyBackgroundImage(
+            body.style,
+            body.background,
+            "EpubFile.bodyBackgroundImage"
+        )
+        if (backgroundHref.isNotBlank()) {
+            val imageHref = resolveEpubResourceHref(res.href, backgroundHref)
+            if (canRenderEpubImage(imageHref)) {
+                body.html = buildString {
+                    append("<img src=\"").append(imageHref.escapeHtmlAttribute()).append('"')
+                    append(" data-legado-width=\"100%\"")
+                    append(" data-legado-style=\"").append(Book.imgStyleSingle.escapeHtmlAttribute()).append('"')
+                    append(" data-epub-background=\"true\">")
+                    append(body.html)
+                }
+            } else {
+                AppLog.putDebug("EPUB skip invalid background image: href=$imageHref, source=${res.href}")
             }
         }
-        if (!endFragmentId.isNullOrBlank() && endFragmentId != startFragmentId) {
-            bodyElement.getElementById(endFragmentId)?.outerHtml()?.let {
-                val tagStart = it.substringBefore("\n")
-                bodyString = bodyString.substringBefore(tagStart)
-            }
+        val imagePageMarks = RustAnalyzerBridge.epubImagePageMarks(
+            body.html,
+            "EpubFile.imagePageMarks"
+        )
+        if (imagePageMarks.bodyStyleAppend.isNotBlank()) {
+            body.style = "${body.style}${imagePageMarks.bodyStyleAppend}"
         }
-        //截取过再重新解析
-        if (bodyString != originBodyString) {
-            doc = Jsoup.parse(bodyString)
-            bodyElement = doc.body()
-        }
-        // EPUB 的标题本身通常带有排版样式，原生阅读器不再删除 h1-h6 或插入统一标题。
-        bodyElement.select("image").forEach {
-            it.tagName("img", Parser.NamespaceHtml)
-            it.attr("src", it.attr("xlink:href").ifBlank { it.attr("href") })
-        }
-        bodyElement.applyEpubCss(doc, res)
-        bodyElement.propagateEpubInheritedStyles()
-        bodyElement.materializeMediaElements(res)
-        bodyElement.select("[style]")
-            .sortedByDescending { it.parents().size }
-            .forEach { element ->
-                element.applyEpubInlineStyle()
-            }
-        if (bodyElement.hasAttr("style")) {
-            bodyElement.applyEpubInlineStyle()
-        }
-        bodyElement.materializePageBackgroundColor()
-        bodyElement.materializeBackgroundImages(res)
-        bodyElement.markEpubOverlayImagePage()
-        bodyElement.markEpubGalleryPage()
-        bodyElement.markSingleImagePage()
-        bodyElement.select("img").forEach {
-            val src = it.epubImageSrc().trim()
-            val resolvedHref = resolveEpubResourceHref(res.href, src)
-            val alt = it.attr("alt")
-            val options = it.epubImageOptions()
-            val isBackground = it.attr("data-epub-background") == "true"
-            it.clearAttributes()
-            it.attr("src", resolvedHref)
-            if (isBackground) {
-                it.attr("data-epub-background", "true")
-            }
-            if (alt.isNotBlank()) {
-                it.attr("alt", alt)
-            }
-            options["width"]?.let { width ->
-                it.attr("data-legado-width", width)
-            }
-            options["style"]?.let { style ->
-                it.attr("data-legado-style", style)
-            }
-            if (!isBackground && options.isNotEmpty()) {
-                it.attr("src", resolvedHref.withEpubImageOptions(options))
-            }
-        }
-        bodyElement.select("a[href]").forEach {
-            val href = it.attr("href").trim()
-            if (href.isNotBlank() && !href.startsWith("#")) {
-                val baseHref = res.href.encodeURI()
-                val resolvedHref = URLDecoder.decode(URI(baseHref).resolve(href.encodeURI()).toString(), "UTF-8")
-                it.attr("href", resolvedHref)
-            }
-        }
+        body.html = imagePageMarks.html
+        body.html =
+            RustAnalyzerBridge.epubMaterializedImages(
+                body.html,
+                res.href,
+                epubBook?.resources?.all.orEmpty().mapNotNull { it.href },
+                "EpubFile.materializedImages"
+            )
+        body.html =
+            RustAnalyzerBridge.epubResolvedLinks(
+                body.html,
+                res.href,
+                "EpubFile.resolvedLinks"
+            )
         if (buildNativeDom) {
-            buildNativeDom(doc, bodyElement, res)
+            buildNativeDom(body, res)
         }
-        return bodyElement
+        return body
     }
 
-    private fun buildNativeDom(doc: Document, bodyElement: Element, res: Resource) {
+    private fun buildNativeDom(body: EpubBody, res: Resource) {
         runCatching {
             val document = EpubDomBuilder(
                 loadCss = ::loadCss,
                 resolveHref = ::resolveEpubResourceHref
             ).build(
-                doc = doc,
-                body = bodyElement,
+                documentHtml = body.documentHtml,
+                bodyHtml = body.html,
+                bodyOuterHtml = body.outerHtml(),
+                title = body.title,
                 baseHref = res.href
             )
             nativeDomCache[res.href] = document
@@ -802,53 +632,25 @@ class EpubFile(var book: Book) {
             footnoteCache[cacheKey] = null
             return null
         }
-        val target = noteSource.document.getElementById(targetId)?.clone() ?: run {
+        val target = RustAnalyzerBridge.epubFootnoteTarget(
+            noteSource.html,
+            targetId,
+            "EpubFile.footnoteTarget"
+        )
+        if (!target.found) {
             footnoteCache[cacheKey] = null
             return null
         }
-        target.select("a[href]").forEach { link ->
-            val linkHref = link.attr("href")
-            val linkTarget = linkHref.substringAfterLast("#", "").decodeEpubFragment()
-            val rel = link.attr("rel").lowercase(Locale.ROOT)
-            val type = link.attr("epub:type").ifBlank { link.attr("type") }.lowercase(Locale.ROOT)
-            val clazz = link.className().lowercase(Locale.ROOT)
-            if (linkTarget == targetId) {
-                link.remove()
-            } else if (
-                linkHref.startsWith("#") ||
-                linkTarget.endsWith("-back") ||
-                linkTarget.endsWith("_back") ||
-                linkTarget.contains("back") ||
-                rel.contains("backlink") ||
-                type.contains("backlink") ||
-                clazz.contains("backlink") ||
-                clazz.contains("noteref")
-            ) {
-                if (link.text().isBlank() && link.children().isEmpty()) {
-                    link.remove()
-                } else {
-                    link.unwrap()
-                }
-            }
+        var html = target.html
+        target.imageSources.forEachIndexed { index, src ->
+            html = html.replace(
+                "__LEGADO_EPUB_FOOTNOTE_IMG_${index}__",
+                resolveEpubResourceHref(noteSource.href, src).escapeHtmlAttribute()
+            )
         }
-        target.select("img").forEach { image ->
-            val src = image.attr("src")
-                .ifBlank { image.attr("data-src") }
-                .ifBlank { image.attr("xlink:href") }
-                .ifBlank { image.attr("href") }
-                .trim()
-            if (src.isNotBlank()) {
-                image.attr("src", resolveEpubResourceHref(noteSource.href, src))
-            }
-        }
-        val html = target.html().ifBlank { target.text() }.trim()
-        val text = target.text().cleanEpubInfoText()
+        val text = target.text.cleanEpubInfoText()
         val footnote = EpubFootnote(
-            title = target.attr("title")
-                .ifBlank { target.attr("aria-label") }
-                .ifBlank { target.attr("epub:type") }
-                .ifBlank { target.attr("role") }
-                .ifBlank { "注解" },
+            title = target.title.ifBlank { "注解" },
             html = html.takeIf { it.isNotBlank() } ?: text
         ).takeIf { text.isNotBlank() || it.html.isNotBlank() }
         footnoteCache[cacheKey] = footnote
@@ -861,9 +663,14 @@ class EpubFile(var book: Book) {
             return footnoteSourceCache[cacheKey]
         }
         val primary = findEpubResource(cleanHref)?.let { resource ->
-            val doc = parseFootnoteDocument(resource.href ?: cleanHref, resource)
-            if (doc?.getElementById(targetId) != null) {
-                FootnoteSource(resource.href, doc)
+            val html = runCatching { String(resource.data, mCharset) }.getOrNull()
+            if (html != null && RustAnalyzerBridge.epubFootnoteTarget(
+                    html,
+                    targetId,
+                    "EpubFile.footnoteSource.primary"
+                ).found
+            ) {
+                FootnoteSource(resource.href ?: cleanHref, html)
             } else {
                 null
             }
@@ -875,9 +682,14 @@ class EpubFile(var book: Book) {
         buildFootnoteIndex()
         footnoteIdHrefIndex[targetId]?.let { indexedHref ->
             findEpubResource(indexedHref)?.let { resource ->
-                val doc = parseFootnoteDocument(indexedHref, resource)
-                if (doc?.getElementById(targetId) != null) {
-                    return FootnoteSource(indexedHref, doc).also {
+                val html = runCatching { String(resource.data, mCharset) }.getOrNull()
+                if (html != null && RustAnalyzerBridge.epubFootnoteTarget(
+                        html,
+                        targetId,
+                        "EpubFile.footnoteSource.index"
+                    ).found
+                ) {
+                    return FootnoteSource(indexedHref, html).also {
                         footnoteSourceCache[cacheKey] = it
                     }
                 }
@@ -887,23 +699,19 @@ class EpubFile(var book: Book) {
             val href = resource.href ?: return@forEach
             val source = runCatching { String(resource.data, mCharset) }.getOrNull() ?: return@forEach
             if (!source.contains(targetId)) return@forEach
-            val doc = parseFootnoteDocument(href, resource, source) ?: return@forEach
-            if (doc.getElementById(targetId) != null) {
-                return FootnoteSource(href, doc).also {
+            if (RustAnalyzerBridge.epubFootnoteTarget(
+                    source,
+                    targetId,
+                    "EpubFile.footnoteSource.scan"
+                ).found
+            ) {
+                return FootnoteSource(href, source).also {
                     footnoteSourceCache[cacheKey] = it
                 }
             }
         }
         footnoteSourceCache[cacheKey] = null
         return null
-    }
-
-    private fun parseFootnoteDocument(href: String, resource: Resource, source: String? = null): Document? {
-        footnoteDocumentCache[href]?.let { return it }
-        val html = source ?: runCatching { String(resource.data, mCharset) }.getOrNull() ?: return null
-        return runCatching { Jsoup.parse(html) }.getOrNull()?.also { doc ->
-            footnoteDocumentCache[href] = doc
-        }
     }
 
     private fun buildFootnoteIndex() {
@@ -914,11 +722,8 @@ class EpubFile(var book: Book) {
             if (!href.isReadableEpubHtml()) return@forEach
             val source = runCatching { String(resource.data, mCharset) }.getOrNull() ?: return@forEach
             if (!source.mayContainFootnote()) return@forEach
-            val doc = parseFootnoteDocument(href, resource, source) ?: return@forEach
-            doc.select("aside[id], section[id], div[id], li[id], p[id], span[id], a[id]").forEach { element ->
-                if (element.isLikelyFootnoteTarget()) {
-                    footnoteIdHrefIndex.putIfAbsent(element.id(), href)
-                }
+            RustAnalyzerBridge.epubFootnoteIds(source, "EpubFile.footnoteIndex").forEach { id ->
+                footnoteIdHrefIndex.putIfAbsent(id, href)
             }
         }
         AppLog.put("EPUB Footnote index built: count=${footnoteIdHrefIndex.size}")
@@ -941,48 +746,27 @@ class EpubFile(var book: Book) {
             contains("id=", ignoreCase = true)
     }
 
-    private fun Element.isLikelyFootnoteTarget(): Boolean {
-        val id = id().lowercase(Locale.ROOT)
-        val type = attr("epub:type").ifBlank { attr("type") }.lowercase(Locale.ROOT)
-        val role = attr("role").lowercase(Locale.ROOT)
-        val clazz = className().lowercase(Locale.ROOT)
-        return type.contains("footnote") ||
-            type.contains("endnote") ||
-            role == "doc-footnote" ||
-            role == "doc-endnote" ||
-            clazz.split(' ').any { it in footnoteClassNames } ||
-            id.startsWith("fn") ||
-            id.startsWith("note") ||
-            id.startsWith("n_") ||
-            id.endsWith("-note") ||
-            id.contains("footnote") ||
-            id.contains("endnote")
-    }
-
     private fun String.decodeEpubFragment(): String {
         return runCatching { URLDecoder.decode(this, "UTF-8") }.getOrDefault(this)
     }
 
-    private fun Document.hideEpubFootnotes() {
-        select("aside[id], section[id], div[id], li[id]").forEach { element ->
-            val type = element.attr("epub:type").ifBlank { element.attr("type") }.lowercase(Locale.ROOT)
-            val role = element.attr("role").lowercase(Locale.ROOT)
-            val clazz = element.className().lowercase(Locale.ROOT)
-            val isNote = type.contains("footnote") ||
-                type.contains("endnote") ||
-                role == "doc-footnote" ||
-                role == "doc-endnote" ||
-                clazz.split(' ').any {
-                    it == "footnote" ||
-                        it == "endnote" ||
-                        it == "note" ||
-                        it == "duokan-footnote-content" ||
-                        it == "duokan-footnote-item"
-                }
-            if (isNote) {
-                element.attr("style", "${element.attr("style")};display:none")
+    private fun String.escapeHtmlAttribute(): String {
+        return replace("&", "&amp;")
+            .replace("\"", "&quot;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+    }
+
+    private fun EpubBody.outerHtml(): String {
+        val attrs = buildString {
+            if (style.isNotBlank()) {
+                append(" style=\"").append(style.escapeHtmlAttribute()).append('"')
+            }
+            if (background.isNotBlank()) {
+                append(" background=\"").append(background.escapeHtmlAttribute()).append('"')
             }
         }
+        return "<body$attrs>$html</body>"
     }
 
     private fun getNativeLayout(
@@ -1381,28 +1165,22 @@ class EpubFile(var book: Book) {
         }
     }
 
-    private fun Element.applyEpubCss(doc: Document, res: Resource) {
+    private fun EpubBody.applyEpubCss(res: Resource) {
         val rules = runCatching {
+            val cssAssets = RustAnalyzerBridge.epubCssAssets(
+                documentHtml = documentHtml,
+                bodyHtml = html,
+                rulePath = "EpubFile.cssAssets"
+            )
+            html = cssAssets.html
             val parsedRules = arrayListOf<EpubCss.Rule>()
-            doc.head()?.select("style")?.forEach { styleElement ->
-                parsedRules.addAll(parseCssRules(styleElement.data().ifBlank { styleElement.html() }))
-            }
-            doc.head()?.select("link[href][rel~=stylesheet]")?.forEach { link ->
-                val href = link.attr("href").trim()
-                if (href.isNotBlank()) {
-                    parsedRules.addAll(parseCssRules(loadCss(res.href, href)))
+            cssAssets.assets.forEach { asset ->
+                when (asset.kind) {
+                    "inline" -> parsedRules.addAll(parseCssRules(asset.content))
+                    "stylesheet" -> asset.href.trim().takeIf { it.isNotBlank() }?.let { href ->
+                        parsedRules.addAll(parseCssRules(loadCss(res.href, href)))
+                    }
                 }
-            }
-            select("style").forEach { styleElement ->
-                parsedRules.addAll(parseCssRules(styleElement.data().ifBlank { styleElement.html() }))
-                styleElement.remove()
-            }
-            select("link[href][rel~=stylesheet]").forEach { link ->
-                val href = link.attr("href").trim()
-                if (href.isNotBlank()) {
-                    parsedRules.addAll(parseCssRules(loadCss(res.href, href)))
-                }
-                link.remove()
             }
             parsedRules
         }.onFailure {
@@ -1412,20 +1190,14 @@ class EpubFile(var book: Book) {
         val orderedRules = rules.mapIndexed { index, rule ->
             rule.copy(order = index)
         }
-        val matchedRules = IdentityHashMap<Element, MutableList<EpubCss.Rule>>()
-        orderedRules.forEach { rule ->
-            runCatching {
-                if (this.`is`(rule.selector)) {
-                    matchedRules.getOrPut(this) { arrayListOf() }.add(rule)
-                }
-                select(rule.selector).forEach { element ->
-                    matchedRules.getOrPut(element) { arrayListOf() }.add(rule)
-                }
-            }
-        }
-        matchedRules.forEach { (element, elementRules) ->
-            element.applyCssRules(elementRules)
-        }
+        val appliedCss = RustAnalyzerBridge.epubAppliedCss(
+            bodyOuterHtml = outerHtml(),
+            rulesJson = GSON.toJson(orderedRules),
+            rulePath = "EpubFile.appliedCss"
+        )
+        html = appliedCss.html
+        style = appliedCss.bodyStyle
+        background = appliedCss.bodyBackground
     }
 
     private fun parseCssRules(css: String): List<EpubCss.Rule> {
@@ -1513,291 +1285,11 @@ class EpubFile(var book: Book) {
         return -1
     }
 
-    private data class CascadedCssValue(
-        val value: String,
-        val important: Boolean,
-        val sourceRank: Int,
-        val specificity: Int,
-        val ruleOrder: Int,
-        val declarationOrder: Int
-    )
-
-    private fun Element.applyCssRules(rules: List<EpubCss.Rule>) {
-        val merged = linkedMapOf<String, CascadedCssValue>()
-        fun putDeclaration(
-            declaration: EpubCss.Declaration,
-            sourceRank: Int,
-            specificity: Int,
-            ruleOrder: Int
-        ) {
-            val value = CascadedCssValue(
-                value = declaration.value,
-                important = declaration.important,
-                sourceRank = sourceRank + if (declaration.important) 2 else 0,
-                specificity = specificity,
-                ruleOrder = ruleOrder,
-                declarationOrder = declaration.order
-            )
-            val current = merged[declaration.name]
-            if (current == null || value.hasHigherCssPriorityThan(current)) {
-                merged[declaration.name] = value
-            }
-        }
-        rules.forEach { rule ->
-            rule.declarations.forEach { declaration ->
-                putDeclaration(declaration, sourceRank = 0, specificity = rule.specificity, ruleOrder = rule.order)
-            }
-        }
-        EpubCss.parseDeclarations(attr("style")).forEach { declaration ->
-            putDeclaration(declaration, sourceRank = 1, specificity = 1000, ruleOrder = Int.MAX_VALUE)
-        }
-        if (merged.isNotEmpty()) {
-            attr("style", merged.entries.joinToString(";") { (name, value) ->
-                buildString {
-                    append(name)
-                    append(':')
-                    append(value.value)
-                    if (value.important) {
-                        append(" !important")
-                    }
-                }
-            })
-        }
-    }
-
-    private fun CascadedCssValue.hasHigherCssPriorityThan(other: CascadedCssValue): Boolean {
-        return compareValuesBy(
-            this,
-            other,
-            CascadedCssValue::sourceRank,
-            CascadedCssValue::specificity,
-            CascadedCssValue::ruleOrder,
-            CascadedCssValue::declarationOrder
-        ) > 0
-    }
-
-    private fun Element.propagateEpubInheritedStyles() {
-        val inheritable = setOf(
-            "color",
-            "font-family",
-            "font-size",
-            "font-style",
-            "font-weight",
-            "line-height",
-            "text-align",
-            "text-decoration",
-            "text-indent"
-        )
-        fun Element.walkWithInherited(parentStyle: Map<String, String>) {
-            val ownStyle = EpubCss.declarations(attr("style"))
-            val inherited = parentStyle.filterKeys { it in inheritable }
-            var changed = false
-            inherited.forEach { (name, value) ->
-                if (!ownStyle.containsKey(name)) {
-                    ownStyle[name] = value
-                    changed = true
-                }
-            }
-            if (changed) {
-                attr("style", ownStyle.entries.joinToString(";") { (name, value) -> "$name:$value" })
-            }
-            val nextInherited = ownStyle.filterKeys { it in inheritable }
-            children().forEach { child ->
-                child.walkWithInherited(nextInherited)
-            }
-        }
-        children().forEach { child ->
-            child.walkWithInherited(EpubCss.declarations(attr("style")))
-        }
-    }
-
-
     private fun String.escapeXmlAttr(): String {
         return replace("&", "&amp;")
             .replace("\"", "&quot;")
             .replace("<", "&lt;")
             .replace(">", "&gt;")
-    }
-
-    private fun Element.applyEpubInlineStyle() {
-        val style = attr("style")
-        if (style.isBlank()) return
-        val declarations = EpubCss.declarations(style)
-        declarations["text-align"]?.let { align ->
-            when (align.lowercase(Locale.ROOT)) {
-                "center", "left", "right" -> attr("align", align.lowercase(Locale.ROOT))
-            }
-        }
-        declarations["color"]?.let { color ->
-            val normalizedColor = color.toHtmlColorAttr()
-            if (normalName() == "font") {
-                normalizedColor?.let { attr("color", it) }
-            } else if (normalizedColor != null) {
-                wrapInnerHtml("font", " color=\"$normalizedColor\"")
-            }
-        }
-        declarations["font-weight"]?.let { weight ->
-            val normalized = weight.lowercase(Locale.ROOT)
-            if (normalized == "bold" || normalized.toIntOrNull()?.let { it >= 600 } == true) {
-                wrapInnerHtml("b")
-            }
-        }
-        declarations["font-style"]?.let { fontStyle ->
-            if (fontStyle.equals("italic", ignoreCase = true) || fontStyle.equals("oblique", ignoreCase = true)) {
-                wrapInnerHtml("i")
-            }
-        }
-        declarations["text-decoration"]?.let { decoration ->
-            val normalized = decoration.lowercase(Locale.ROOT)
-            if (normalized.contains("underline")) {
-                wrapInnerHtml("u")
-            }
-            if (normalized.contains("line-through")) {
-                wrapInnerHtml("strike")
-            }
-        }
-        declarations["display"]?.let { display ->
-            if (display.equals("none", ignoreCase = true)) {
-                remove()
-            }
-        }
-        val useBlockDecoration = isEpubDecoratedBlock(declarations)
-        val backgroundColor = declarations["background-color"]?.toEpubColorTag()
-            ?: declarations["background"]?.extractCssColor()?.toEpubColorTag()
-        backgroundColor?.let { colorTag ->
-            if (normalName() != "body" && !useBlockDecoration) {
-                wrapInnerHtml("epubbg$colorTag")
-            }
-        }
-        declarations["border"]?.extractCssColor()?.toEpubColorTag()?.let { colorTag ->
-            if (normalName() != "body" && !useBlockDecoration) {
-                wrapInnerHtml("epubbg$colorTag")
-            }
-        }
-        declarations["font-size"]?.let { size ->
-            val normalized = size.trim().lowercase(Locale.ROOT)
-            when {
-                normalized.contains("small") || normalized.endsWith("smaller") ||
-                    normalized.removeSuffix("%").toFloatOrNull()?.let { it < 90f } == true ||
-                    normalized.removeSuffix("em").toFloatOrNull()?.let { it < 0.9f } == true -> {
-                    wrapInnerHtml("small")
-                }
-                normalized.contains("large") ||
-                    normalized.removeSuffix("%").toFloatOrNull()?.let { it > 110f } == true ||
-                    normalized.removeSuffix("em").toFloatOrNull()?.let { it > 1.1f } == true -> {
-                    wrapInnerHtml("big")
-                }
-            }
-        }
-    }
-
-    private fun Element.isEpubDecoratedBlock(declarations: Map<String, String>): Boolean {
-        val name = normalName()
-        val isBlock = name in setOf(
-            "address", "article", "aside", "blockquote", "body", "dd", "div", "dl", "dt",
-            "fieldset", "figcaption", "figure", "footer", "form", "h1", "h2", "h3",
-            "h4", "h5", "h6", "header", "li", "main", "nav", "ol", "p", "pre",
-            "section", "table", "td", "th", "tr", "ul"
-        )
-        if (!isBlock) return false
-        return declarations.containsKey("border") ||
-            declarations.containsKey("border-color") ||
-            declarations.containsKey("border-radius") ||
-            declarations.containsKey("padding") ||
-            declarations.keys.any { it.startsWith("padding-") }
-    }
-
-    private fun Element.wrapInnerHtml(tag: String, attributes: String = "") {
-        val name = normalName()
-        if (name == tag || html().isBlank()) return
-        html("<$tag$attributes>${html()}</$tag>")
-    }
-
-    private fun Element.materializePageBackgroundColor() {
-        if (normalName() != "body") return
-        val declarations = EpubCss.declarations(attr("style"))
-        val colorTag = attr("bgcolor").takeIf { it.isNotBlank() }?.toEpubColorTag()
-            ?: declarations["background-color"]?.toEpubColorTag()
-            ?: declarations["background"]?.extractCssColor()?.toEpubColorTag()
-            ?: return
-        prepend("""<span data-epub-page-bg="$colorTag"></span>""")
-    }
-
-    private fun Element.materializeMediaElements(res: Resource) {
-        select("video,audio,source,iframe,embed,object").forEach { media ->
-            val src = media.attr("src")
-                .ifBlank { media.attr("href") }
-                .ifBlank { media.attr("data") }
-                .ifBlank {
-                    media.selectFirst("source[src]")?.attr("src").orEmpty()
-                }
-                .trim()
-            val resolvedHref = src.takeIf { it.isNotBlank() }?.let {
-                resolveEpubResourceHref(res.href, it)
-            }.orEmpty()
-            val label = when (media.normalName()) {
-                "audio" -> "EPUB音频"
-                else -> "EPUB视频"
-            }
-            val title = media.attr("title")
-                .ifBlank { media.attr("alt") }
-                .ifBlank { resolvedHref.substringAfterLast('/').ifBlank { label } }
-            val href = if (resolvedHref.isBlank()) {
-                "legado-epub-media:missing"
-            } else {
-                "legado-epub-media:${resolvedHref.encodeURI()}"
-            }
-            media.after(
-                """<p class="epub-media-placeholder" style="margin:1em 5%;padding:0.8em;text-align:center;background:rgba(68,150,211,0.12);border:1px solid rgba(68,150,211,0.55);border-radius:8px;color:#225577"><a href="$href">[$label] $title</a></p>"""
-            )
-            media.remove()
-        }
-    }
-
-    private fun Element.materializeBackgroundImages(res: Resource) {
-        val elements = linkedSetOf<Element>().apply {
-            if (attr("style").contains("background", ignoreCase = true) || attr("background").isNotBlank()) {
-                add(this@materializeBackgroundImages)
-            }
-            addAll(select("[style*=background]"))
-        }
-        elements.forEach { element ->
-            val imageHref = element.backgroundImageHref(res.href) ?: return@forEach
-            if (element.normalName() != "body") return@forEach
-            if (!canRenderEpubImage(imageHref)) {
-                AppLog.putDebug("EPUB skip invalid background image: href=$imageHref, source=${res.href}")
-                return@forEach
-            }
-            val img = Element("img")
-            img.attr("src", imageHref)
-            img.attr("data-legado-width", "100%")
-            img.attr("data-legado-style", Book.imgStyleSingle)
-            img.attr("data-epub-background", "true")
-            prependChild(img)
-        }
-    }
-
-    private fun Element.backgroundImageHref(baseHref: String): String? {
-        val style = attr("style")
-        val declarations = EpubCss.declarations(style)
-        val background = declarations["background-image"]
-            ?: declarations["background"]
-            ?: attr("background").takeIf { it.isNotBlank() }
-            ?: return null
-        val url = background.extractCssUrl() ?: background.takeIf { attr("background").isNotBlank() }
-        val clean = url?.trim()?.trimMatchingQuote()
-            ?.takeIf { it.isNotBlank() && !it.equals("none", ignoreCase = true) }
-            ?: return null
-        return resolveEpubResourceHref(baseHref, clean)
-    }
-
-    private fun String.extractCssUrl(): String? {
-        val start = indexOf("url(", ignoreCase = true)
-        if (start < 0) return null
-        val valueStart = start + 4
-        val end = indexOf(')', valueStart)
-        if (end < 0) return null
-        return substring(valueStart, end).trim()
     }
 
     private fun String.trimMatchingQuote(): String {
@@ -1881,245 +1373,6 @@ class EpubFile(var book: Book) {
         }
         fallbacks.add(parts.last())
         return fallbacks.filter { it.isNotBlank() && it != clean }
-    }
-
-    private fun String.extractCssColor(): String? {
-        val clean = trim()
-        if (clean.startsWith("#") || clean.startsWith("rgb", true)) return clean
-        val parts = clean.split(' ', ',', '/')
-            .map { it.trim() }
-            .filter { it.isNotBlank() }
-        return parts.firstOrNull { part ->
-            part.startsWith("#") || part.startsWith("rgb", true) || part.toNamedCssColor() != null
-        }
-    }
-
-    private fun String.toEpubColorTag(): String? {
-        val color = toAndroidColor() ?: return null
-        return "%08X".format(color)
-    }
-
-    private fun String.toHtmlColorAttr(): String? {
-        val color = toAndroidColor() ?: return null
-        val alpha = Color.alpha(color)
-        return if (alpha == 255) {
-            "#%06X".format(color and 0x00FFFFFF)
-        } else {
-            "#%08X".format(color)
-        }
-    }
-
-    private fun String.toAndroidColor(): Int? {
-        val clean = trim().trimMatchingQuote()
-        return when {
-            clean.startsWith("rgba", true) || clean.startsWith("rgb", true) -> clean.parseRgbCssColor()
-            clean.startsWith("#") -> runCatching { Color.parseColor(clean.normalizeHexColor()) }.getOrNull()
-            else -> clean.toNamedCssColor()?.let { runCatching { Color.parseColor(it) }.getOrNull() }
-        }
-    }
-
-    private fun String.normalizeHexColor(): String {
-        val hex = trim().removePrefix("#")
-        return when (hex.length) {
-            3 -> "#" + hex.map { "$it$it" }.joinToString("")
-            4 -> "#" + hex.map { "$it$it" }.joinToString("")
-            else -> "#$hex"
-        }
-    }
-
-    private fun String.parseRgbCssColor(): Int? {
-        val start = indexOf('(')
-        val end = lastIndexOf(')')
-        if (start < 0 || end <= start) return null
-        val parts = substring(start + 1, end)
-            .split(',', ' ', '/')
-            .map { it.trim() }
-            .filter { it.isNotBlank() }
-        if (parts.size < 3) return null
-        fun component(value: String): Int {
-            return if (value.endsWith("%")) {
-                ((value.dropLast(1).toFloatOrNull() ?: 0f) * 2.55f).toInt()
-            } else {
-                value.toFloatOrNull()?.toInt() ?: 0
-            }.coerceIn(0, 255)
-        }
-        val alpha = parts.getOrNull(3)?.let { value ->
-            if (value.endsWith("%")) {
-                ((value.dropLast(1).toFloatOrNull() ?: 100f) * 2.55f).toInt()
-            } else {
-                ((value.toFloatOrNull() ?: 1f) * 255f).toInt()
-            }
-        } ?: 255
-        return Color.argb(alpha.coerceIn(0, 255), component(parts[0]), component(parts[1]), component(parts[2]))
-    }
-
-    private fun String.toNamedCssColor(): String? {
-        return when (lowercase(Locale.ROOT)) {
-            "black" -> "#000000"
-            "white" -> "#FFFFFF"
-            "red" -> "#FF0000"
-            "green" -> "#008000"
-            "blue" -> "#0000FF"
-            "cyan", "aqua" -> "#00FFFF"
-            "magenta", "fuchsia" -> "#FF00FF"
-            "yellow" -> "#FFFF00"
-            "gray", "grey" -> "#808080"
-            "silver" -> "#C0C0C0"
-            "maroon" -> "#800000"
-            "purple" -> "#800080"
-            "teal" -> "#008080"
-            "navy" -> "#000080"
-            "orange" -> "#FFA500"
-            "transparent" -> "#00000000"
-            else -> null
-        }
-    }
-
-    private fun Element.markSingleImagePage() {
-        val images = select("img")
-        if (images.size != 1) return
-        val text = text().trim()
-        if (text.isNotBlank()) return
-        images.first()?.attr("data-epub-single-page", "true")
-    }
-
-    private fun Element.markEpubOverlayImagePage() {
-        val images = select("img")
-        if (images.size != 1) return
-        val image = images.first() ?: return
-        if (image.attr("data-epub-background") == "true") return
-        val text = text().trim()
-        if (text.isBlank() || text.length > 80) return
-        val firstElement = children().firstOrNull { child ->
-            child.normalName() !in setOf("style", "link", "script")
-        } ?: return
-        if (firstElement != image && firstElement.selectFirst("img") != image) return
-        val hasOverlayBlock = select("h1,h2,h3,h4,h5,h6,table,.vol-title").isNotEmpty()
-        if (!hasOverlayBlock) return
-        image.attr("data-epub-background", "true")
-    }
-
-    private fun Element.markEpubGalleryPage() {
-        val images = select("img").filterNot { it.attr("data-epub-background") == "true" }
-        if (images.size < 2) return
-        if (select(".duokan-image-gallery-cell").isNotEmpty()) {
-            attr(
-                "style",
-                "${attr("style")};margin:0;padding:0;text-indent:0;text-align:center"
-            )
-            select(".duokan-image-gallery,.duokan-image-gallery-cell,.duokan-gallery,.gallery").forEach { gallery ->
-                gallery.attr(
-                    "style",
-                    "${gallery.attr("style")};display:block;margin:0 auto;text-align:center;max-width:100%"
-                )
-            }
-            images.forEach { image ->
-                if (image.attr("data-legado-width").isBlank()) {
-                    image.attr("data-legado-width", "100%")
-                }
-                image.attr(
-                    "style",
-                    "${image.attr("style")};display:block;margin:0 auto;max-width:100%;height:auto"
-                )
-            }
-            return
-        }
-        val text = text().cleanEpubInfoText()
-        if (text.length > 120) return
-        attr(
-            "style",
-            "${attr("style")};margin:0;padding:0;text-indent:0;text-align:center;line-height:1"
-        )
-        images.forEach { image ->
-            if (image.attr("data-legado-width").isBlank()) {
-                image.attr("data-legado-width", "100%")
-            }
-            if (image.attr("data-legado-style").isBlank()) {
-                image.attr("data-legado-style", Book.imgStyleSingle)
-            }
-            image.attr(
-                "style",
-                "${image.attr("style")};display:block;margin:0 auto;max-width:100%;height:auto"
-            )
-        }
-    }
-
-    private fun Element.epubImageSrc(): String {
-        return attr("src")
-            .ifBlank { attr("data-src") }
-            .ifBlank { attr("data-original") }
-            .ifBlank { attr("data-lazy-src") }
-            .ifBlank { attr("data-url") }
-            .ifBlank { attr("xlink:href") }
-            .ifBlank { attr("href") }
-    }
-
-    private fun Element.epubImageOptions(): Map<String, String> {
-        val options = linkedMapOf<String, String>()
-        val style = attr("style")
-        val declarations = EpubCss.declarations(style)
-        val width = attr("data-legado-width")
-            .ifBlank { attr("width") }
-            .ifBlank { declarations["width"].orEmpty() }
-        if (width.isNotBlank()) {
-            options["width"] = normalizeImageWidth(width)
-        }
-        val height = attr("data-legado-height")
-            .ifBlank { attr("height") }
-            .ifBlank { declarations["height"].orEmpty() }
-        if (height.isNotBlank()) {
-            normalizeImageLength(height)?.let {
-                options["height"] = it
-            }
-        }
-        if (attr("data-legado-style").isNotBlank()) {
-            options["style"] = attr("data-legado-style")
-        }
-        if (attr("data-epub-single-page") == "true") {
-            options["style"] = Book.imgStyleSingle
-            options.putIfAbsent("width", "100%")
-        } else if (options["width"].isInlineEpubImageWidth()) {
-            options["style"] = "text"
-        }
-        return options
-    }
-
-    private fun normalizeImageWidth(width: String): String {
-        return normalizeImageLength(width) ?: "100%"
-    }
-
-    private fun normalizeImageLength(width: String): String? {
-        val clean = width.trim().lowercase(Locale.ROOT)
-        return when {
-            clean.endsWith("%") -> clean
-            clean.endsWith("em") || clean.endsWith("rem") -> clean
-            clean.endsWith("px") -> clean.dropLast(2).substringBefore(".")
-            clean.toIntOrNull() != null -> clean
-            else -> null
-        }
-    }
-
-    private fun String?.isInlineEpubImageWidth(): Boolean {
-        val clean = this?.trim()?.lowercase(Locale.ROOT) ?: return false
-        return when {
-            clean.endsWith("em") -> (clean.dropLast(2).toFloatOrNull() ?: Float.MAX_VALUE) <= 3f
-            clean.endsWith("rem") -> (clean.dropLast(3).toFloatOrNull() ?: Float.MAX_VALUE) <= 3f
-            clean.endsWith("px") -> (clean.dropLast(2).toFloatOrNull() ?: Float.MAX_VALUE) <= 96f
-            clean.endsWith("%") -> (clean.dropLast(1).toFloatOrNull() ?: Float.MAX_VALUE) <= 12f
-            else -> (clean.toFloatOrNull() ?: Float.MAX_VALUE) <= 96f
-        }
-    }
-
-    private fun String.withEpubImageOptions(options: Map<String, String>): String {
-        if (options.isEmpty()) return this
-        val json = options.entries.joinToString(",", prefix = "{", postfix = "}") { (key, value) ->
-            """"${key.escapeJson()}":"${value.escapeJson()}""""
-        }
-        return "$this,$json"
-    }
-
-    private fun String.escapeJson(): String {
-        return replace("\\", "\\\\").replace("\"", "\\\"")
     }
 
     private fun getImage(href: String): InputStream? {
@@ -2234,7 +1487,10 @@ class EpubFile(var book: Book) {
             if (metadata.descriptions.isNotEmpty()) {
                 val desc = metadata.descriptions[0]
                 book.intro = if (desc.isXml()) {
-                    Jsoup.parse(metadata.descriptions[0]).text()
+                    RustAnalyzerBridge.htmlTextArray(
+                        metadata.descriptions[0],
+                        "EpubFile.metadata.description"
+                    ).joinToString("\n")
                 } else {
                     desc
                 }
@@ -2271,12 +1527,10 @@ class EpubFile(var book: Book) {
                         var title = resource.title
                         if (TextUtils.isEmpty(title)) {
                             try {
-                                val doc =
-                                    Jsoup.parse(String(resource.data, mCharset))
-                                val elements = doc.getElementsByTag("title")
-                                if (elements.isNotEmpty()) {
-                                    title = elements[0].text()
-                                }
+                                title = RustAnalyzerBridge.htmlTitle(
+                                    String(resource.data, mCharset),
+                                    "EpubFile.spineFallbackTitle"
+                                )
                             } catch (e: IOException) {
                                 e.printStackTrace()
                             }
@@ -2458,14 +1712,8 @@ class EpubFile(var book: Book) {
         if (!title.isNullOrBlank() && !title.isLikelyEpubFileTitle(hrefName)) {
             return title.cleanEpubChapterTitle(this, spineIndex)
         }
-        val doc = runCatching { Jsoup.parse(String(data, mCharset)) }.getOrNull()
-        val titleText = doc?.selectFirst(
-            "h1,h2,h3,h4,h5,h6,[id^=toc_],.chapter,.chapter-title,.title,.head," +
-                ".duokan-image-maintitle,.role-title,.vol-title,.extra-h1"
-        )
-            ?.text()
-            ?.trim()
-            ?: doc?.selectFirst("title")?.text()?.trim()
+        val html = runCatching { String(data, mCharset) }.getOrDefault("")
+        val titleText = RustAnalyzerBridge.epubReadableTitle(html, "EpubFile.readableTitle").trim()
         if (!titleText.isNullOrBlank()) return titleText.cleanEpubChapterTitle(this, spineIndex)
         return title.cleanEpubChapterTitle(this, spineIndex).ifBlank {
             fallbackEpubSpineTitle(hrefName, spineIndex)
@@ -2545,37 +1793,10 @@ class EpubFile(var book: Book) {
     }
 
     private fun Resource.extractEpubBookInfo(): EpubBookInfo? {
-        val doc = runCatching { Jsoup.parse(String(data, mCharset)) }.getOrNull() ?: return null
-        if (!doc.isEpubBookInfoDocument()) return null
-        val lines = doc.body().select("h1,h2,h3,h4,p,div:not(:has(p)):not(:has(div))")
-            .map { it.text().cleanEpubInfoText() }
-            .filter { it.isNotBlank() }
-            .distinct()
-        val author = lines.mapNotNull { line -> line.substringAfterLabel("作者") }.firstOrNull().orEmpty()
-        val introLines = arrayListOf<String>()
-        var inIntro = false
-        lines.forEach { line ->
-            val intro = line.substringAfterLabel("简介")
-            when {
-                intro != null -> {
-                    inIntro = true
-                    if (intro.isNotBlank()) introLines.add(intro)
-                }
-                inIntro && !line.isEpubInfoMetaLine() -> introLines.add(line)
-            }
-        }
-        val intro = introLines.joinToString("\n").trim()
-        return EpubBookInfo(author = author, intro = intro)
-    }
-
-    private fun Document.isEpubBookInfoDocument(): Boolean {
-        val title = select("[title*=书籍信息], [title*=版权信息], [title*=简介]").firstOrNull()
-        if (title != null) return true
-        val text = body().text().cleanEpubInfoText()
-        val hasIntro = text.contains("简介")
-        val hasBookMeta = text.contains("作者") || text.contains("首发") || text.contains("完本")
-        val hasInfoClass = select(".sjmc,.jj01,.jj02,.copyright,.book-info").isNotEmpty()
-        return hasIntro && hasBookMeta && hasInfoClass
+        val html = runCatching { String(data, mCharset) }.getOrNull() ?: return null
+        val info = RustAnalyzerBridge.epubBookInfo(html, "EpubFile.bookInfo")
+        if (!info.isBookInfo) return null
+        return EpubBookInfo(author = info.author, intro = info.intro)
     }
 
     private fun String.cleanEpubInfoText(): String {
@@ -2584,19 +1805,6 @@ class EpubFile(var book: Book) {
             .trim()
             .trim('　')
             .trim()
-    }
-
-    private fun String.substringAfterLabel(label: String): String? {
-        val regex = Regex("^\\s*$label\\s*[：:]\\s*(.*)$")
-        return regex.find(this)?.groupValues?.getOrNull(1)?.cleanEpubInfoText()
-    }
-
-    private fun String.isEpubInfoMetaLine(): Boolean {
-        return substringAfterLabel("作者") != null ||
-            substringAfterLabel("首发") != null ||
-            substringAfterLabel("完本") != null ||
-            equals("简介", ignoreCase = true) ||
-            equals("简介：", ignoreCase = true)
     }
 
     private data class EpubBookInfo(
@@ -2611,7 +1819,7 @@ class EpubFile(var book: Book) {
 
     private data class FootnoteSource(
         val href: String,
-        val document: Document
+        val html: String
     )
 
     private fun normalizeChapterList(chapterList: ArrayList<BookChapter>) {

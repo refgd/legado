@@ -11,7 +11,7 @@ import io.legado.app.help.config.AppConfig
 import io.legado.app.lib.webdav.Authorization
 import io.legado.app.lib.webdav.WebDav
 import io.legado.app.lib.webdav.WebDavFile
-import io.legado.app.model.analyzeRule.CustomUrl
+import io.legado.app.utils.CustomUrl
 import io.legado.app.model.localBook.LocalBook
 import io.legado.app.utils.NetworkUtils
 import io.legado.app.utils.isContentScheme

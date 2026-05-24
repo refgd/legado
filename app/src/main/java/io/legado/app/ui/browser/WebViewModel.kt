@@ -2,8 +2,6 @@ package io.legado.app.ui.browser
 
 import android.app.Application
 import android.content.Intent
-import android.util.Base64
-import android.webkit.URLUtil
 import android.webkit.WebView
 import io.legado.app.base.BaseViewModel
 import io.legado.app.constant.AppConst
@@ -11,17 +9,16 @@ import io.legado.app.constant.AppConst.imagePathKey
 import io.legado.app.constant.SourceType
 import io.legado.app.data.appDb
 import io.legado.app.exception.NoStackTraceException
-import io.legado.app.help.http.newCallResponseBody
-import io.legado.app.help.http.okHttpClient
 import io.legado.app.help.source.SourceHelp
 import io.legado.app.help.source.SourceVerificationHelp
-import io.legado.app.model.analyzeRule.AnalyzeUrl
+import io.legado.app.model.webBook.RustAnalyzerBridge
 import io.legado.app.utils.ACache
 import io.legado.app.utils.FileDoc
 import io.legado.app.utils.createFileIfNotExist
 import io.legado.app.utils.openOutputStream
 import io.legado.app.utils.printOnDebug
 import io.legado.app.utils.toastOnUi
+import io.legado.app.utils.WebImageBytes
 import org.apache.commons.text.StringEscapeUtils
 import java.util.Date
 import io.legado.app.data.entities.BaseSource
@@ -69,11 +66,20 @@ class WebViewModel(application: Application) : BaseViewModel(application) {
                 }
             }
             source = SourceHelp.getSource(sourceOrigin, sourceType)
-            val analyzeUrl = AnalyzeUrl(url, source = source, coroutineContext = coroutineContext)
-            baseUrl = analyzeUrl.url
-            headerMap.putAll(analyzeUrl.headerMap)
-            if (analyzeUrl.isPost()) {
-                html = analyzeUrl.getStrResponseAwait(useWebView = false).body
+            val resolved = RustAnalyzerBridge.resolveUrl(
+                url = url,
+                source = source,
+                rulePath = "WebViewModel.initData"
+            )
+            baseUrl = resolved.url
+            headerMap.putAll(resolved.headerMap())
+            if (resolved.method.equals("POST", ignoreCase = true)) {
+                html = RustAnalyzerBridge.fetchText(
+                    url = url,
+                    source = source,
+                    useWebView = false,
+                    rulePath = "WebViewModel.initData.post"
+                ).body
             }
         }.onSuccess {
             success.invoke()
@@ -103,13 +109,7 @@ class WebViewModel(application: Application) : BaseViewModel(application) {
     }
 
     private suspend fun webData2bitmap(data: String): ByteArray? {
-        return if (URLUtil.isValidUrl(data)) {
-            okHttpClient.newCallResponseBody {
-                url(data)
-            }.bytes()
-        } else {
-            Base64.decode(data.split(",").toTypedArray()[1], Base64.DEFAULT)
-        }
+        return WebImageBytes.fetch(data, source, "WebViewModel.saveImage")
     }
 
     fun saveVerificationResult(webView: WebView, success: () -> Unit) {
@@ -121,12 +121,12 @@ class WebViewModel(application: Application) : BaseViewModel(application) {
                 val url = intent!!.getStringExtra("url")!!
                 val source = appDb.bookSourceDao.getBookSource(sourceOrigin)
                 if (html == null) {
-                    html = AnalyzeUrl(
-                        url,
-                        headerMapF = headerMap,
+                    html = RustAnalyzerBridge.fetchText(
+                        url = url,
                         source = source,
-                        coroutineContext = coroutineContext
-                    ).getStrResponseAwait(useWebView = false).body
+                        useWebView = false,
+                        rulePath = "WebViewModel.saveVerificationResult"
+                    ).body
                 }
                 SourceVerificationHelp.setResult(sourceOrigin, html ?: "", baseUrl)
             }.onSuccess {
@@ -160,4 +160,12 @@ class WebViewModel(application: Application) : BaseViewModel(application) {
         }
     }
 
+}
+
+private fun io.legado.app.model.webBook.RustResolvedUrl.headerMap(): Map<String, String> {
+    return headers.mapNotNull { pair ->
+        val key = pair.getOrNull(0)?.takeIf { it.isNotBlank() }
+        val value = pair.getOrNull(1)
+        if (key == null || value == null) null else key to value
+    }.toMap()
 }

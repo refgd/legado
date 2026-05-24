@@ -15,10 +15,10 @@ import io.legado.app.help.CacheManager
 import io.legado.app.help.config.AppConfig
 import io.legado.app.help.http.BackstageWebView
 import io.legado.app.help.webView.WebJsExtensions.Companion.nameCache
+import io.legado.app.model.webBook.RustAnalyzerBridge
 import io.legado.app.utils.printOnDebug
 import io.legado.app.utils.toastOnUi
 import org.eclipse.tm4e.core.registry.IThemeSource
-import org.jsoup.Jsoup
 import splitties.init.appCtx
 
 class CodeEditViewModel(application: Application) : BaseViewModel(application) {
@@ -190,11 +190,7 @@ class CodeEditViewModel(application: Application) : BaseViewModel(application) {
     }
 
     private fun formatCodeHtml(html: String): String? {
-        val doc = Jsoup.parse(html)
-        doc.outputSettings()
-            .indentAmount(4)
-            .prettyPrint(true)
-        return doc.outerHtml()
+        return RustAnalyzerBridge.htmlFormat(html, "CodeEdit.formatHtml")
     }
 
 }

@@ -122,7 +122,6 @@ https://gedoor.github.io/Disclaimer
 > * org.jsoup:jsoup
 > * cn.wanghaomiao:JsoupXpath
 > * com.jayway.jsonpath:json-path
-> * com.github.gedoor:rhino-android
 > * com.squareup.okhttp3:okhttp
 > * com.github.bumptech.glide:glide
 > * org.nanohttpd:nanohttpd

@@ -33,7 +33,7 @@ import io.legado.app.lib.theme.getPrimaryTextColor
 import io.legado.app.lib.theme.UiCorner
 import io.legado.app.model.ReadBook
 import io.legado.app.model.SourceCallBack
-import io.legado.app.model.analyzeRule.AnalyzeUrl
+import io.legado.app.model.webBook.RustAnalyzerBridge
 import io.legado.app.ui.book.read.config.ReaderSheetStyle
 import io.legado.app.ui.browser.WebViewActivity
 import io.legado.app.ui.widget.seekbar.SeekBarChangeListener
@@ -59,6 +59,7 @@ import splitties.views.onClick
 import splitties.views.onLongClick
 import io.legado.app.constant.BookType
 import io.legado.app.utils.buildMainHandler
+import java.util.regex.Pattern
 
 /**
  * 阅读界面菜单
@@ -67,6 +68,10 @@ class ReadMenu @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null
 ) : FrameLayout(context, attrs) {
+    private companion object {
+        val paramPattern: Pattern = Pattern.compile("\\s*,\\s*(?=\\{)")
+    }
+
     var canShowMenu: Boolean = false
     private val callBack: CallBack get() = activity as CallBack
     private val binding = ViewReadMenuBinding.inflate(LayoutInflater.from(context), this, true)
@@ -718,7 +723,7 @@ class ReadMenu @JvmOverloads constructor(
             return it
         }
         val candidates = listOf(
-            resolveAnalyzeUrl(chapter.url, chapter.baseUrl),
+            resolveRustUrl(chapter.url, chapter.baseUrl),
             runCatching { chapter.getAbsoluteURL() }.getOrNull(),
             chapter.baseUrl,
             ReadBook.book?.bookUrl
@@ -738,7 +743,7 @@ class ReadMenu @JvmOverloads constructor(
                 && !host.startsWith("127.")
     }
 
-    private fun resolveAnalyzeUrl(url: String, baseUrl: String): String? {
+    private fun resolveRustUrl(url: String, baseUrl: String): String? {
         val cleanUrl = url.trim()
         if (cleanUrl.isBlank()
             || cleanUrl.startsWith("file://", ignoreCase = true)
@@ -747,16 +752,17 @@ class ReadMenu @JvmOverloads constructor(
             return null
         }
         val shouldAnalyze = cleanUrl.isDataUrl()
-            || AnalyzeUrl.paramPattern.matcher(cleanUrl).find()
+            || paramPattern.matcher(cleanUrl).find()
             || baseUrl.isAbsUrl()
         if (!shouldAnalyze) {
             return null
         }
         return runCatching {
-            AnalyzeUrl(
-                mUrl = cleanUrl,
+            RustAnalyzerBridge.resolveUrl(
+                url = cleanUrl,
+                source = ReadBook.bookSource,
                 baseUrl = baseUrl,
-                source = ReadBook.bookSource
+                rulePath = "ReadMenu.resolveRustUrl"
             ).url
         }.getOrNull()
     }

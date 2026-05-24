@@ -6,11 +6,11 @@ import androidx.lifecycle.lifecycleScope
 import io.legado.app.R
 import io.legado.app.base.BaseService
 import io.legado.app.constant.AppConst
-import io.legado.app.constant.AppLog
 import io.legado.app.constant.EventBus
 import io.legado.app.constant.IntentAction
 import io.legado.app.constant.NotificationId
 import io.legado.app.data.appDb
+import io.legado.app.exception.NoStackTraceException
 import io.legado.app.help.book.update
 import io.legado.app.help.config.AppConfig
 import io.legado.app.model.CacheBook
@@ -114,9 +114,9 @@ class CacheBookService : BaseService() {
                             WebBook.getBookInfoAwait(cacheBook.bookSource, book)
                         }.onFailure {
                             removeDownload(bookUrl)
-                            val msg = "《$name》目录为空且加载详情页失败\n${it.localizedMessage}"
-                            AppLog.put(msg, it, true)
-                            return@execute
+                            throw NoStackTraceException(
+                                "CacheBookService Rust detail failed for $name: ${it.localizedMessage ?: it}"
+                            )
                         }
                     }
                     WebBook.getChapterListAwait(cacheBook.bookSource, book).onFailure {
@@ -125,10 +125,10 @@ class CacheBookService : BaseService() {
                             book.update()
                         }
                         removeDownload(bookUrl)
-                        val msg = "《$name》目录为空且加载目录失败\n${it.localizedMessage}"
-                        AppLog.put(msg, it, true)
-                        return@execute
-                    }.getOrNull()?.let { toc ->
+                        throw NoStackTraceException(
+                            "CacheBookService Rust toc failed for $name: ${it.localizedMessage ?: it}"
+                        )
+                    }.getOrThrow().let { toc ->
                         appDb.bookChapterDao.insert(*toc.toTypedArray())
                     }
                     book.update()

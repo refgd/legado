@@ -9,6 +9,7 @@ import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookChapter
 import io.legado.app.data.entities.BookSource
 import io.legado.app.exception.ConcurrentException
+import io.legado.app.exception.NoStackTraceException
 import io.legado.app.help.book.BookHelp
 import io.legado.app.help.book.CacheManifestHelper
 import io.legado.app.help.book.isLocal
@@ -372,7 +373,10 @@ object CacheBook {
                 //出现错误等待一秒后重新加入待下载列表
                 delay(1000)
                 onPostError(chapter, it)
-                downloadFinish(chapter, "获取正文失败\n${it.localizedMessage}")
+                throw NoStackTraceException(
+                    "CacheBook Rust content failed for ${book.name}-${chapter.title}: " +
+                        (it.localizedMessage ?: it.toString())
+                )
             }.onCancel {
                 onCancel(chapterIndex)
             }.onFinally {
@@ -400,7 +404,10 @@ object CacheBook {
                 onError(chapter, e)
                 ReadBook.downloadFailChapters[chapter.index] =
                     (ReadBook.downloadFailChapters[chapter.index] ?: 0) + 1
-                return "获取正文失败\n${e.localizedMessage}"
+                throw NoStackTraceException(
+                    "CacheBook Rust content failed for ${book.name}-${chapter.title}: " +
+                        (e.localizedMessage ?: e.toString())
+                )
             } finally {
                 postEvent(EventBus.UP_DOWNLOAD, book.bookUrl)
             }
@@ -435,7 +442,10 @@ object CacheBook {
                 onError(chapter, it)
                 ReadBook.downloadFailChapters[chapter.index] =
                     (ReadBook.downloadFailChapters[chapter.index] ?: 0) + 1
-                downloadFinish(chapter, "获取正文失败\n${it.localizedMessage}", resetPageOffset)
+                throw NoStackTraceException(
+                    "CacheBook Rust content failed for ${book.name}-${chapter.title}: " +
+                        (it.localizedMessage ?: it.toString())
+                )
             }.onCancel {
                 onCancel(chapter.index)
                 downloadFinish(chapter, "download canceled", resetPageOffset, true)

@@ -23,9 +23,8 @@ import io.legado.app.help.book.isNotShelf
 import io.legado.app.help.book.isVideo
 import io.legado.app.help.book.removeType
 import io.legado.app.model.CacheBook
-import io.legado.app.model.analyzeRule.AnalyzeUrl
-import io.legado.app.model.analyzeRule.AnalyzeUrl.Companion.getMediaRequest
 import io.legado.app.model.webBook.WebBook
+import io.legado.app.model.webBook.RustAnalyzerBridge
 import io.legado.app.utils.GSON
 import io.legado.app.utils.MD5Utils
 import io.legado.app.utils.externalCache
@@ -37,7 +36,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
-import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -648,25 +646,19 @@ class CacheManageViewModel(application: Application) : BaseViewModel(application
             .takeIf { it.isNotBlank() }
             ?.let { content -> normalizeMediaContent(book, content) }
             ?.let(candidates::add)
-        var lastError: Throwable? = null
         for (content in candidates) {
-            try {
-                if (content.isJsonArray()) {
-                    return ExoPlayerHelper.MediaRequest(content)
-                }
-                return AnalyzeUrl(
-                    content,
-                    source = source,
-                    ruleData = book,
-                    chapter = chapter,
-                    coroutineContext = currentCoroutineContext()
-                ).getMediaRequest()
-            } catch (e: Exception) {
-                lastError = e
+            if (content.isJsonArray()) {
+                return ExoPlayerHelper.MediaRequest(content)
             }
+            return RustAnalyzerBridge.resolveMediaRequest(
+                url = content,
+                source = source,
+                baseUrl = chapter.baseUrl,
+                rulePath = "CacheManage.resolveMediaRequest"
+            )
         }
         throw IllegalStateException(
-            lastError?.localizedMessage ?: context.getString(R.string.cache_manage_audio_url_empty)
+            context.getString(R.string.cache_manage_audio_url_empty)
         )
     }
 
@@ -690,7 +682,12 @@ class CacheManageViewModel(application: Application) : BaseViewModel(application
 
     private fun isDownloadableMediaContent(content: String): Boolean {
         val urls = if (content.isJsonArray()) {
-            GSON.fromJsonArray<String>(content).getOrNull().orEmpty()
+            GSON.fromJsonArray<String>(content).getOrElse {
+                throw IllegalArgumentException(
+                    "CacheManage media content URL array JSON is invalid for Rust analyzer handoff: " +
+                        (it.localizedMessage ?: it::class.java.name)
+                )
+            }
         } else {
             listOf(content)
         }

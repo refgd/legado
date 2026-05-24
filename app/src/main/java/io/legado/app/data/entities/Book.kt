@@ -12,6 +12,7 @@ import io.legado.app.constant.AppPattern
 import io.legado.app.constant.BookType
 import io.legado.app.constant.PageAnim
 import io.legado.app.data.appDb
+import io.legado.app.exception.NoStackTraceException
 import io.legado.app.help.book.BookHelp
 import io.legado.app.help.book.ContentProcessor
 import io.legado.app.help.book.getFolderNameNoCache
@@ -143,7 +144,7 @@ data class Book(
     @delegate:Ignore
     @IgnoredOnParcel
     override val variableMap: HashMap<String, String> by lazy {
-        GSON.fromJsonObject<HashMap<String, String>>(variable).getOrNull() ?: hashMapOf()
+        parseVariableMap("Book($origin/$bookUrl)", variable)
     }
 
     @Ignore
@@ -487,6 +488,14 @@ data class Book(
         fun readConfigToString(config: ReadConfig?): String = GSON.toJson(config)
 
         @TypeConverter
-        fun stringToReadConfig(json: String?) = GSON.fromJsonObject<ReadConfig>(json).getOrNull()
+        fun stringToReadConfig(json: String?): ReadConfig? {
+            if (json.isNullOrBlank() || json.trim() == "null") return null
+            return GSON.fromJsonObject<ReadConfig>(json).getOrElse {
+                throw NoStackTraceException(
+                    "Book read config JSON is invalid for Rust analyzer state handoff: " +
+                        (it.localizedMessage ?: it::class.java.name)
+                )
+            }
+        }
     }
 }

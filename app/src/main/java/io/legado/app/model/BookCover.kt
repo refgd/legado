@@ -22,21 +22,19 @@ import io.legado.app.R
 import io.legado.app.constant.PreferKey
 import io.legado.app.data.entities.BaseSource
 import io.legado.app.data.entities.Book
+import io.legado.app.exception.NoStackTraceException
 import io.legado.app.help.CacheManager
 import io.legado.app.help.DefaultData
 import io.legado.app.help.config.AppConfig
 import io.legado.app.help.glide.BlurTransformation
 import io.legado.app.help.glide.ImageLoader
-import io.legado.app.help.glide.OkHttpModelLoader
-import io.legado.app.model.analyzeRule.AnalyzeRule
-import io.legado.app.model.analyzeRule.AnalyzeRule.Companion.setCoroutineContext
-import io.legado.app.model.analyzeRule.AnalyzeUrl
+import io.legado.app.help.glide.RustImageModelLoader
+import io.legado.app.model.webBook.RustAnalyzerBridge
 import io.legado.app.utils.BitmapUtils
 import io.legado.app.utils.GSON
 import io.legado.app.utils.fromJsonObject
 import io.legado.app.utils.getPrefBoolean
 import io.legado.app.utils.getPrefString
-import kotlinx.coroutines.currentCoroutineContext
 import splitties.init.appCtx
 import java.io.File
 import androidx.core.graphics.drawable.toDrawable
@@ -95,9 +93,9 @@ object BookCover {
         var options = RequestOptions()
             .format(DecodeFormat.PREFER_ARGB_8888)
             .disallowHardwareConfig()
-            .set(OkHttpModelLoader.loadOnlyWifiOption, loadOnlyWifi)
+            .set(RustImageModelLoader.loadOnlyWifiOption, loadOnlyWifi)
         if (sourceOrigin != null) {
-            options = options.set(OkHttpModelLoader.sourceOriginOption, sourceOrigin)
+            options = options.set(RustImageModelLoader.sourceOriginOption, sourceOrigin)
         }
         var builder = ImageLoader.load(context, path)
             .apply(options)
@@ -140,10 +138,10 @@ object BookCover {
         sourceOrigin: String? = null,
         transformation: Transformation<Bitmap>? = null,
     ): RequestBuilder<Drawable> {
-        var options = RequestOptions().set(OkHttpModelLoader.loadOnlyWifiOption, loadOnlyWifi)
-            .set(OkHttpModelLoader.mangaOption, true)
+        var options = RequestOptions().set(RustImageModelLoader.loadOnlyWifiOption, loadOnlyWifi)
+            .set(RustImageModelLoader.mangaOption, true)
         if (sourceOrigin != null) {
-            options = options.set(OkHttpModelLoader.sourceOriginOption, sourceOrigin)
+            options = options.set(RustImageModelLoader.sourceOriginOption, sourceOrigin)
         }
         return ImageLoader.load(context, path)
             .apply(options)
@@ -164,10 +162,10 @@ object BookCover {
         loadOnlyWifi: Boolean = false,
         sourceOrigin: String? = null,
     ): RequestBuilder<File?> {
-        var options = RequestOptions().set(OkHttpModelLoader.loadOnlyWifiOption, loadOnlyWifi)
-            .set(OkHttpModelLoader.mangaOption, true)
+        var options = RequestOptions().set(RustImageModelLoader.loadOnlyWifiOption, loadOnlyWifi)
+            .set(RustImageModelLoader.mangaOption, true)
         if (sourceOrigin != null) {
-            options = options.set(OkHttpModelLoader.sourceOriginOption, sourceOrigin)
+            options = options.set(RustImageModelLoader.sourceOriginOption, sourceOrigin)
         }
         return Glide.with(context)
             .downloadOnly()
@@ -195,9 +193,9 @@ object BookCover {
         var options = RequestOptions()
             .format(DecodeFormat.PREFER_ARGB_8888)
             .disallowHardwareConfig()
-            .set(OkHttpModelLoader.loadOnlyWifiOption, loadOnlyWifi)
+            .set(RustImageModelLoader.loadOnlyWifiOption, loadOnlyWifi)
         if (sourceOrigin != null) {
-            options = options.set(OkHttpModelLoader.sourceOriginOption, sourceOrigin)
+            options = options.set(RustImageModelLoader.sourceOriginOption, sourceOrigin)
         }
         return ImageLoader.load(context, path)
             .apply(options)
@@ -213,8 +211,15 @@ object BookCover {
     }
 
     fun getConfig(): CoverRule? {
-        return GSON.fromJsonObject<CoverRule>(CacheManager.get(coverRuleConfigKey))
-            .getOrNull()
+        val json = CacheManager.get(coverRuleConfigKey)
+        if (json.isNullOrBlank()) {
+            return null
+        }
+        return GSON.fromJsonObject<CoverRule>(json).getOrElse {
+            throw NoStackTraceException(
+                "BookCover rule JSON is invalid for Rust analyzer handoff: ${it.localizedMessage}"
+            )
+        }
     }
 
     suspend fun searchCover(book: Book): String? {
@@ -222,19 +227,7 @@ object BookCover {
         if (!config.enable || config.searchUrl.isBlank() || config.coverRule.isBlank()) {
             return null
         }
-        val analyzeUrl = AnalyzeUrl(
-            config.searchUrl,
-            book.name,
-            source = config,
-            coroutineContext = currentCoroutineContext(),
-            hasLoginHeader = false
-        )
-        val res = analyzeUrl.getStrResponseAwait()
-        val analyzeRule = AnalyzeRule(book, config)
-        analyzeRule.setCoroutineContext(currentCoroutineContext())
-        analyzeRule.setContent(res.body)
-        analyzeRule.setRedirectUrl(res.url)
-        return analyzeRule.getString(config.coverRule, isUrl = true)
+        return RustAnalyzerBridge.coverSearch(config, config.searchUrl, config.coverRule, book)
     }
 
     fun saveCoverRule(config: CoverRule) {

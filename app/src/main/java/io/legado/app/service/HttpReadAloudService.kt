@@ -24,7 +24,6 @@ import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.source.MediaSource
 import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy
 import androidx.media3.exoplayer.upstream.LoadErrorHandlingPolicy
-import com.script.ScriptException
 import io.legado.app.R
 import io.legado.app.constant.AppLog
 import io.legado.app.constant.AppPattern
@@ -33,10 +32,9 @@ import io.legado.app.exception.NoStackTraceException
 import io.legado.app.help.config.AppConfig
 import io.legado.app.help.coroutine.Coroutine
 import io.legado.app.help.exoplayer.InputStreamDataSource
-import io.legado.app.help.http.okHttpClient
 import io.legado.app.model.ReadAloud
 import io.legado.app.model.ReadBook
-import io.legado.app.model.analyzeRule.AnalyzeUrl
+import io.legado.app.model.webBook.RustAnalyzerBridge
 import io.legado.app.ui.book.read.page.entities.TextChapter
 import io.legado.app.utils.FileUtils
 import io.legado.app.utils.MD5Utils
@@ -55,13 +53,24 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import okhttp3.Response
-import org.mozilla.javascript.WrappedException
 import splitties.init.appCtx
+import java.io.ByteArrayInputStream
 import java.io.File
 import java.io.InputStream
 import java.net.ConnectException
 import java.net.SocketTimeoutException
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicInteger
+
+private val httpReadAloudDownloadThreadId = AtomicInteger(0)
+
+internal val httpReadAloudDownloadExecutor by lazy {
+    Executors.newCachedThreadPool { runnable ->
+        Thread(runnable, "legado-http-read-aloud-${httpReadAloudDownloadThreadId.incrementAndGet()}").apply {
+            isDaemon = true
+        }
+    }
+}
 
 /**
  * 在线朗读
@@ -355,7 +364,7 @@ class HttpReadAloudService : BaseReadAloudService(),
     private fun createDownloader(factory: CacheDataSource.Factory, fileName: String): Downloader {
         val uri = fileName.toUri()
         val request = DownloadRequest.Builder(fileName, uri).build()
-        return DefaultDownloaderFactory(factory, okHttpClient.dispatcher.executorService)
+        return DefaultDownloaderFactory(factory, httpReadAloudDownloadExecutor)
             .createDownloader(request)
     }
 
@@ -374,68 +383,36 @@ class HttpReadAloudService : BaseReadAloudService(),
         var downloadErrorNo = 0
         while (true) {
             try {
-                val analyzeUrl = AnalyzeUrl(
-                    httpTts.url,
+                val response = RustAnalyzerBridge.fetchTtsAudio(
+                    httpTts = httpTts,
                     speakText = speakText,
-                    speakSpeed = speechRate,
-                    source = httpTts,
-                    readTimeout = 300 * 1000L,
-                    coroutineContext = currentCoroutineContext()
+                    speakSpeed = speechRate
                 )
-                val checkJs = httpTts.loginCheckJs
-                val response = kotlin.runCatching {
-                    analyzeUrl.getResponseAwait().let {
-                        currentCoroutineContext().ensureActive()
-                        if (!checkJs.isNullOrBlank()) {
-                            analyzeUrl.evalJS(checkJs, it) as Response
-                        } else {
-                            it
-                        }
-                    }
-                }.getOrElse { throwable ->
-                    currentCoroutineContext().ensureActive()
-                    if (!checkJs.isNullOrBlank()) {
-                        val errResponse = analyzeUrl.getErrResponse(throwable)
-                        try {
-                            (analyzeUrl.evalJS(checkJs, errResponse) as Response).also {
-                                if (it.code == 500) {
-                                    throw throwable
-                                }
-                            }
-                        } catch (_: Throwable) {
-                            throw throwable
-                        }
-                    } else {
-                        throw throwable
-                    }
-                }
-                response.headers["Content-Type"]?.let { contentType ->
+                response.contentType?.let { contentType ->
                     val contentType = contentType.substringBefore(";")
                     val ct = httpTts.contentType
                     if (contentType == "application/json" || contentType.startsWith("text/")) {
-                        throw NoStackTraceException(response.body.string())
+                        throw NoStackTraceException(response.body.toString(Charsets.UTF_8))
                     } else if (ct?.isNotBlank() == true) {
                         if (!contentType.matches(ct.toRegex())) {
                             throw NoStackTraceException(
-                                "TTS服务器返回错误：" + response.body.string()
+                                "TTS服务器返回错误：" + response.body.toString(Charsets.UTF_8)
                             )
                         }
                     }
                 }
                 currentCoroutineContext().ensureActive()
-                response.body.byteStream().let { stream ->
-                    return stream
-                }
+                return ByteArrayInputStream(response.body)
             } catch (e: Exception) {
-                when (e) {
-                    is CancellationException -> throw e
-                    is ScriptException, is WrappedException -> {
+                when {
+                    e is CancellationException -> throw e
+                    e.message?.contains("JavaScript", ignoreCase = true) == true -> {
                         AppLog.put("js错误\n${e.localizedMessage}", e, true)
                         e.printOnDebug()
                         throw e
                     }
 
-                    is SocketTimeoutException, is ConnectException -> {
+                    e is SocketTimeoutException || e is ConnectException -> {
                         downloadErrorNo++
                         if (downloadErrorNo > 5 || !pauseOnFailure) {
                             val msg = "tts超时或连接错误超过5次\n${e.localizedMessage}"
@@ -445,23 +422,17 @@ class HttpReadAloudService : BaseReadAloudService(),
                     }
 
                     else -> {
-                        downloadErrorNo++
                         val msg = "tts下载错误\n${e.localizedMessage}"
                         AppLog.put(msg, e)
                         e.printOnDebug()
-                        if (downloadErrorNo > 5 || !pauseOnFailure) {
-                            val msg1 = "TTS服务器连续5次错误，已暂停阅读。"
-                            AppLog.put(msg1, e, true)
-                            throw e
-                        } else {
-                            AppLog.put("TTS下载音频出错，使用无声音频代替。\n朗读文本：$speakText")
-                            break
-                        }
+                        throw NoStackTraceException(
+                            "HttpReadAloud Rust TTS fetch failed for text '$speakText': " +
+                                    (e.localizedMessage ?: e::class.java.name)
+                        )
                     }
                 }
             }
         }
-        return null
     }
 
     private fun md5SpeakFileName(content: String, textChapter: TextChapter? = this.textChapter): String {

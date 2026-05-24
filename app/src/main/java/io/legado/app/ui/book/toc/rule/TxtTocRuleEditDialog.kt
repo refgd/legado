@@ -160,13 +160,20 @@ class TxtTocRuleEditDialog() : BaseDialogFragment(R.layout.dialog_toc_regex_edit
                 if (text.isNullOrBlank()) {
                     throw NoStackTraceException("剪贴板为空")
                 }
-                GSON.fromJsonObject<TxtTocRule>(text).getOrNull()
-                    ?: throw NoStackTraceException("格式不对")
+                GSON.fromJsonObject<TxtTocRule>(text).getOrElse {
+                    throw NoStackTraceException(
+                        "TxtTocRuleEdit paste rule JSON is invalid for Rust analyzer handoff: " +
+                            (it.localizedMessage ?: it::class.java.name)
+                    )
+                }
             }.onSuccess {
                 success.invoke(it)
             }.onError {
                 context.toastOnUi(it.localizedMessage ?: "Error")
-                it.printOnDebug()
+                throw NoStackTraceException(
+                    "TxtTocRuleEdit paste rule failed: " +
+                        (it.localizedMessage ?: it::class.java.name)
+                )
             }
         }
 

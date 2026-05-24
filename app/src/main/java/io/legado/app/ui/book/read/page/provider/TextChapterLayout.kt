@@ -68,21 +68,19 @@ import androidx.core.util.component2
 import io.legado.app.help.TextViewTagHandler
 import io.legado.app.help.TextViewTagHandler.Companion.HR_PLACE_CHAR
 import io.legado.app.help.TextViewTagHandler.Companion.HR_PLACE_STR
-import io.legado.app.model.analyzeRule.AnalyzeUrl.Companion.paramPattern
 import io.legado.app.model.localBook.EpubCss
 import io.legado.app.model.localBook.EpubFile
 import io.legado.app.model.localBook.EpubImageBox
 import io.legado.app.model.localBook.EpubLayoutDocument
 import io.legado.app.model.localBook.EpubPageColor
+import io.legado.app.model.webBook.RustAnalyzerBridge
+import io.legado.app.model.webBook.RustHtmlRenderAction
+import io.legado.app.model.webBook.RustHtmlImageInfo
+import io.legado.app.model.webBook.RustHtmlPageBackground
 import io.legado.app.ui.book.read.page.entities.column.BaseColumn
 import io.legado.app.ui.book.read.page.entities.column.TextBaseColumn
+import io.legado.app.utils.UrlOptions
 import io.legado.app.ui.book.read.page.provider.ChapterProvider.reviewChar
-import io.legado.app.utils.GSON
-import io.legado.app.utils.fromJsonObject
-import org.jsoup.Jsoup
-import org.jsoup.nodes.Element
-import org.jsoup.nodes.Node
-import org.jsoup.nodes.TextNode
 
 class TextChapterLayout(
     scope: CoroutineScope,
@@ -308,15 +306,15 @@ class TextChapterLayout(
                 val imgText = if (titleImg.isNullOrEmpty()) {
                     null
                 } else {
-                    val urlMatcher = paramPattern.matcher(titleImg)
+                    val urlMatcher = UrlOptions.paramPattern.matcher(titleImg)
                     var click: String? = null
                     var style: String? = null
                     var imgSize = ImageProvider.getImageSize(book, titleImg, ReadBook.bookSource)
                     if (urlMatcher.find()) {
                         var width: String? = null
                         val urlOptionStr = titleImg.substring(urlMatcher.end())
-                        GSON.fromJsonObject<Map<String, String>>(urlOptionStr).getOrNull()
-                            ?.let { map ->
+                        UrlOptions.parseStringMap(urlOptionStr, "TextChapterLayout.titleImage")
+                            .let { map ->
                                 map.forEach { (key, value) ->
                                     when (key) {
                                         "style" -> style = value
@@ -461,11 +459,11 @@ class TextChapterLayout(
                         var style: String? = null
                         var click: String? = null
                         var imgSize = ImageProvider.getImageSize(book, imgSrc, ReadBook.bookSource)
-                        val urlMatcher = paramPattern.matcher(imgSrc)
+                        val urlMatcher = UrlOptions.paramPattern.matcher(imgSrc)
                         if (urlMatcher.find()) {
                             var width: String? = null
                             val urlOptionStr = imgSrc.substring(urlMatcher.end())
-                            GSON.fromJsonObject<Map<String, String>>(urlOptionStr).getOrNull()?.let { map ->
+                            UrlOptions.parseStringMap(urlOptionStr, "TextChapterLayout.inlineImage").let { map ->
                                 map.forEach { (key, value) ->
                                     when (key) {
                                         "style" -> style = value
@@ -699,8 +697,10 @@ class TextChapterLayout(
             AppLog.put("EPUB Native Layout abort: 当前书籍不是 EPUB, book=${book.name}")
             return false
         }
-        val wrapper = Jsoup.parse(rawNativeEntry).selectFirst("epub-native[data-href]")
-            ?: run {
+        val hrefs = RustAnalyzerBridge.epubNativeEntryHrefs(
+            rawNativeEntry,
+            "TextChapterLayout.epubNativeEntry"
+        ).ifEmpty {
                 val reason = "未找到 epub-native[data-href]"
                 AppLog.put(
                     "EPUB Native Layout error: $reason, " +
@@ -709,13 +709,6 @@ class TextChapterLayout(
                 setTypeEpubDiagnosticPage(reason, rawNativeEntry.take(180))
                 return true
             }
-        val hrefs = wrapper.attr("data-hrefs")
-            .takeIf { it.isNotBlank() }
-            ?.split("|")
-            ?.map { it.trim() }
-            ?.filter { it.isNotBlank() }
-            ?.distinct()
-            ?: listOf(wrapper.attr("data-href").trim()).filter { it.isNotBlank() }
         if (hrefs.isEmpty()) {
             val reason = "data-href 为空"
             AppLog.put(
@@ -894,85 +887,67 @@ class TextChapterLayout(
             htmlBuffer.setLength(0)
         }
 
-        suspend fun renderNode(node: Node) {
+        val pageBackground = if (isClassicEpub) {
+            RustAnalyzerBridge.htmlPageBackground(
+                htmlContent,
+                "TextChapterLayout.pageBackground"
+            )
+        } else {
+            null
+        }
+        if (pageBackground != null) {
+            prepareEpubPageBackground(pageBackground, book)
+        }
+        val renderActions = RustAnalyzerBridge.htmlRenderPlan(
+            pageBackground?.html ?: htmlContent,
+            isClassicEpub,
+            "TextChapterLayout.renderPlan"
+        )
+        renderActions.forEach { action ->
             currentCoroutineContext().ensureActive()
-            when (node) {
-                is TextNode -> htmlBuffer.append(node.outerHtml())
-                is Element -> {
-                    if (isClassicEpub && node.hasAttr("data-epub-page-bg")) {
-                        flushHtmlBuffer()
-                        node.attr("data-epub-page-bg").toEpubTagColor()?.let { color ->
-                            if (pendingTextPage.lines.isNotEmpty() || pendingTextPage.hasEpubBackground()) {
-                                prepareNextPageIfNeed()
-                            }
-                            pendingTextPage.epubBackgroundColor = color
-                            pendingTextPage.height = viewHeight.toFloat()
+            when (action.kind) {
+                "html" -> htmlBuffer.append(action.html)
+                "flush" -> flushHtmlBuffer()
+                "pageBreak" -> prepareNextPageIfNeed()
+                "pageColor" -> {
+                    flushHtmlBuffer()
+                    action.pageColor.toEpubTagColor()?.let { color ->
+                        if (pendingTextPage.lines.isNotEmpty() || pendingTextPage.hasEpubBackground()) {
+                            prepareNextPageIfNeed()
                         }
-                        return
-                    }
-                    if (isClassicEpub && node.hasEpubPageBreakBefore()) {
-                        flushHtmlBuffer()
-                        prepareNextPageIfNeed()
-                    }
-                    if (isClassicEpub && node.isHtmlBlock() && node.hasEpubBlockSpacingBefore()) {
-                        flushHtmlBuffer()
-                        addEpubBlockSpacingBefore(node)
-                    }
-                    if (isClassicEpub && node.isHtmlBlock() && node.hasEpubBlockBoxStyle() && !node.hasHtmlImage()) {
-                        flushHtmlBuffer()
-                        setTypeEpubBlockBox(imageStyle, book, node)
-                    } else if (node.normalName() == "table") {
-                        flushHtmlBuffer()
-                        setTypeHtmlText(imageStyle, book, node.toReadableTableHtml())
-                    } else if (node.normalName() == "img") {
-                        flushHtmlBuffer()
-                        setTypeHtmlImage(imageStyle, book, node)
-                    } else if (node.hasHtmlImage() || isClassicEpub && node.hasEpubBlockBoxDescendant()) {
-                        if (node.isHtmlBlock()) {
-                            flushHtmlBuffer()
-                        }
-                        node.childNodes().forEach { child ->
-                            renderNode(child)
-                        }
-                        if (node.isHtmlBlock()) {
-                            htmlBuffer.append("<br>")
-                            flushHtmlBuffer()
-                        }
-                    } else {
-                        htmlBuffer.append(node.outerHtml())
-                        if (node.isHtmlBlock()) {
-                            flushHtmlBuffer()
-                        }
-                    }
-                    if (isClassicEpub && node.isHtmlBlock() && node.hasEpubBlockSpacingAfter()) {
-                        flushHtmlBuffer()
-                        addEpubBlockSpacingAfter(node)
-                    }
-                    if (isClassicEpub && node.hasEpubPageBreakAfter()) {
-                        flushHtmlBuffer()
-                        prepareNextPageIfNeed()
+                        pendingTextPage.epubBackgroundColor = color
+                        pendingTextPage.height = viewHeight.toFloat()
                     }
                 }
-                else -> htmlBuffer.append(node.outerHtml())
+                "spacingBefore" -> {
+                    flushHtmlBuffer()
+                    addEpubBlockSpacingBefore(action)
+                }
+                "spacingAfter" -> {
+                    flushHtmlBuffer()
+                    addEpubBlockSpacingAfter(action)
+                }
+                "blockBox" -> {
+                    flushHtmlBuffer()
+                    setTypeEpubBlockBox(imageStyle, book, action.html)
+                }
+                "htmlText" -> {
+                    flushHtmlBuffer()
+                    setTypeHtmlText(imageStyle, book, action.html)
+                }
+                "image" -> {
+                    flushHtmlBuffer()
+                    setTypeHtmlImage(imageStyle, book, action.image)
+                }
+                else -> htmlBuffer.append(action.html)
             }
-        }
-
-        val body = Jsoup.parseBodyFragment(htmlContent).body()
-        if (isClassicEpub) {
-            prepareEpubPageBackground(body, book)
-        }
-        body.childNodes().forEach { node ->
-            renderNode(node)
         }
         flushHtmlBuffer()
     }
 
-    private suspend fun prepareEpubPageBackground(body: Element, book: Book) {
-        val pageColor = body.selectFirst("[data-epub-page-bg]")
-            ?.attr("data-epub-page-bg")
-            ?.toEpubTagColor()
-        val pageBackground = body.selectFirst("img[data-epub-background=true]")
-        val backgroundSrc = pageBackground?.attr("src")?.trim().orEmpty()
+    private suspend fun prepareEpubPageBackground(pageBackground: RustHtmlPageBackground, book: Book) {
+        val pageColor = pageBackground.pageColor.toEpubTagColor()
+        val backgroundSrc = pageBackground.backgroundSrc.trim()
         if (pageColor == null && backgroundSrc.isBlank()) return
         if (pendingTextPage.lines.isNotEmpty() || pendingTextPage.hasEpubBackground()) {
             prepareNextPageIfNeed()
@@ -994,21 +969,19 @@ class TextChapterLayout(
             pendingTextPage.epubBackgroundSrc = backgroundSrc
         }
         pendingTextPage.height = viewHeight.toFloat()
-        body.select("[data-epub-page-bg]").remove()
-        pageBackground?.remove()
     }
 
     private suspend fun setTypeEpubBlockBox(
         imageStyle: String?,
         book: Book,
-        element: Element
+        htmlContent: String
     ) {
         if (!isClassicEpub) {
-            setTypeHtmlText(imageStyle, book, element.outerHtml())
+            setTypeHtmlText(imageStyle, book, htmlContent)
             return
         }
-        val style = element.epubBlockDecorationStyle() ?: run {
-            setTypeHtmlText(imageStyle, book, element.outerHtml())
+        val style = htmlContent.extractFirstStyleAttribute().epubBlockDecorationStyle() ?: run {
+            setTypeHtmlText(imageStyle, book, htmlContent)
             return
         }
         val startPageIndex = textPages.size
@@ -1023,7 +996,7 @@ class TextChapterLayout(
             setTypeHtmlText(
                 imageStyle = imageStyle,
                 book = book,
-                htmlContent = element.outerHtml(),
+                htmlContent = htmlContent,
                 layoutStartOffset = layoutOffset,
                 layoutWidth = layoutWidth
             )
@@ -1105,9 +1078,9 @@ class TextChapterLayout(
         page.invalidate()
     }
 
-    private suspend fun addEpubBlockSpacingBefore(element: Element) {
-        val spacing = element.epubCssValue("margin-top").toEpubSpacingPx()
-            ?: element.epubCssValue("padding-top").toEpubSpacingPx()
+    private suspend fun addEpubBlockSpacingBefore(action: RustHtmlRenderAction) {
+        val spacing = action.marginTop.toEpubSpacingPx()
+            ?: action.paddingTop.toEpubSpacingPx()
             ?: contentPaintTextHeight
         if (spacing <= 0f) return
         prepareNextPageIfNeed(durY + spacing)
@@ -1117,80 +1090,15 @@ class TextChapterLayout(
         }
     }
 
-    private suspend fun addEpubBlockSpacingAfter(element: Element) {
-        val spacing = element.epubCssValue("margin-bottom").toEpubSpacingPx()
-            ?: element.epubCssValue("padding-bottom").toEpubSpacingPx()
+    private suspend fun addEpubBlockSpacingAfter(action: RustHtmlRenderAction) {
+        val spacing = action.marginBottom.toEpubSpacingPx()
+            ?: action.paddingBottom.toEpubSpacingPx()
             ?: contentPaintTextHeight
         if (spacing <= 0f) return
         prepareNextPageIfNeed(durY + spacing)
         durY += spacing
         if (pendingTextPage.height < durY) {
             pendingTextPage.height = durY
-        }
-    }
-
-    private fun Element.hasEpubPageBreakBefore(): Boolean {
-        return epubCssValue("page-break-before").isEpubAlwaysBreak() ||
-            epubCssValue("break-before").isEpubAlwaysBreak()
-    }
-
-    private fun Element.hasEpubPageBreakAfter(): Boolean {
-        return epubCssValue("page-break-after").isEpubAlwaysBreak() ||
-            epubCssValue("break-after").isEpubAlwaysBreak()
-    }
-
-    private fun Element.hasEpubBlockSpacingBefore(): Boolean {
-        return epubCssValue("margin-top").isLargeEpubSpacing() ||
-            epubCssValue("padding-top").isLargeEpubSpacing()
-    }
-
-    private fun Element.hasEpubBlockSpacingAfter(): Boolean {
-        return epubCssValue("margin-bottom").isLargeEpubSpacing() ||
-            epubCssValue("padding-bottom").isLargeEpubSpacing()
-    }
-
-    private fun Element.epubCssValue(name: String): String {
-        val declarations = epubCssDeclarations()
-        declarations[name]?.let { return it }
-        val shorthand = when {
-            name.startsWith("margin-") -> "margin"
-            name.startsWith("padding-") -> "padding"
-            else -> return ""
-        }
-        val values = declarations[shorthand]?.let { EpubCss.splitValueList(it) }.orEmpty()
-        if (values.isEmpty()) return ""
-        val top = values.getOrNull(0).orEmpty()
-        val right = values.getOrNull(1) ?: top
-        val bottom = values.getOrNull(2) ?: top
-        val left = values.getOrNull(3) ?: right
-        return when (name.substringAfter('-')) {
-            "top" -> top
-            "right" -> right
-            "bottom" -> bottom
-            "left" -> left
-            else -> ""
-        }
-    }
-
-    private fun Element.epubCssDeclarations(): Map<String, String> {
-        val style = attr("style")
-        return if (style.isBlank()) emptyMap() else EpubCss.declarations(style)
-    }
-
-    private fun String.isEpubAlwaysBreak(): Boolean {
-        val value = trim().lowercase()
-        return value == "always" || value == "page" || value == "left" || value == "right"
-    }
-
-    private fun String.isLargeEpubSpacing(): Boolean {
-        val value = trim().lowercase()
-        if (value.isBlank() || value == "0") return false
-        return when {
-            value.endsWith("em") -> (value.dropLast(2).toFloatOrNull() ?: 0f) >= 1f
-            value.endsWith("rem") -> (value.dropLast(3).toFloatOrNull() ?: 0f) >= 1f
-            value.endsWith("%") -> (value.dropLast(1).toFloatOrNull() ?: 0f) >= 8f
-            value.endsWith("px") -> (value.dropLast(2).toFloatOrNull() ?: 0f) >= 16f
-            else -> (value.toFloatOrNull() ?: 0f) >= 16f
         }
     }
 
@@ -1236,23 +1144,8 @@ class TextChapterLayout(
         }
     }
 
-    private fun Element.hasEpubBlockBoxStyle(): Boolean {
-        val declarations = EpubCss.declarations(attr("style"))
-        return declarations.keys.any { key ->
-            key == "background" || key == "background-color" || key == "border" ||
-                key == "border-color" || key == "border-width" || key == "border-style" ||
-                key == "border-radius" || key.startsWith("border-")
-        }
-    }
-
-    private fun Element.hasEpubBlockBoxDescendant(): Boolean {
-        return children().any { child ->
-            child.isHtmlBlock() && child.hasEpubBlockBoxStyle() || child.hasEpubBlockBoxDescendant()
-        }
-    }
-
-    private fun Element.epubBlockDecorationStyle(): EpubBlockDecorationStyle? {
-        val declarations = EpubCss.declarations(attr("style"))
+    private fun String.epubBlockDecorationStyle(): EpubBlockDecorationStyle? {
+        val declarations = if (isBlank()) emptyMap() else EpubCss.declarations(this)
         val backgroundColor = declarations["background-color"]?.toEpubCssColor()
             ?: declarations["background"]?.extractCssColor()?.toEpubCssColor()
         val borderColor = declarations["border-color"]?.toEpubCssColor()
@@ -1329,6 +1222,11 @@ class TextChapterLayout(
             3 -> listOf(parts[0], parts[1], parts[2], parts[1])
             else -> parts.take(4)
         }
+    }
+
+    private fun String.extractFirstStyleAttribute(): String {
+        val match = Regex("""(?is)\sstyle\s*=\s*(['"])(.*?)\1""").find(this) ?: return ""
+        return match.groupValues.getOrNull(2).orEmpty()
     }
 
     private fun String.extractCssColor(): String? {
@@ -1454,73 +1352,14 @@ class TextChapterLayout(
         val pageDecorations: MutableMap<Int, TextPage.EpubDecoration> = linkedMapOf()
     )
 
-    private fun Element.toReadableTableHtml(): String {
-        val rows = select("tr").ifEmpty { children() }
-        val rowHtml = rows.mapNotNull { row ->
-            val cells = row.select("th,td").ifEmpty { row.children() }
-                .mapNotNull { cell ->
-                    cell.toReadableInlineHtml().takeIf { it.isNotBlank() }
-                }
-            val rowText = if (cells.isEmpty()) {
-                row.toReadableInlineHtml()
-            } else {
-                cells.joinToString("　")
-            }.trim()
-            rowText.takeIf { it.isNotBlank() }
-        }
-        if (rowHtml.isEmpty()) {
-            val text = toReadableInlineHtml()
-            val align = htmlAlignOrNull()?.let { """ align="$it"""" }.orEmpty()
-            return if (text.isBlank()) "" else """<p$align>$text</p>"""
-        }
-        val align = htmlAlignOrNull()?.let { """ align="$it"""" }.orEmpty()
-        return rowHtml.joinToString("") { row ->
-            """<p$align>$row</p>"""
-        }
-    }
-
-    private fun Element.toReadableInlineHtml(): String {
-        val builder = StringBuilder()
-        childNodes().forEach { child ->
-            when (child) {
-                is TextNode -> builder.append(child.outerHtml())
-                is Element -> {
-                    when (child.normalName()) {
-                        "br" -> builder.append("<br>")
-                        "img" -> {
-                            if (child.attr("src").isNotBlank()) {
-                                builder.append(child.outerHtml())
-                            } else {
-                                child.attr("alt").takeIf { it.isNotBlank() }?.let {
-                                    builder.append(it)
-                                }
-                            }
-                        }
-                        "b", "strong" -> builder.append("<b>")
-                            .append(child.toReadableInlineHtml())
-                            .append("</b>")
-                        "i", "em" -> builder.append("<i>")
-                            .append(child.toReadableInlineHtml())
-                            .append("</i>")
-                        "font" -> builder.append(child.outerHtml())
-                        else -> builder.append(child.toReadableInlineHtml())
-                    }
-                }
-            }
-        }
-        val own = builder.toString().trim()
-        if (own.isNotBlank()) return own
-        return ownText().trim()
-    }
-
     private suspend fun setTypeHtmlImage(
         imageStyle: String?,
         book: Book,
-        element: Element
+        imageInfo: RustHtmlImageInfo
     ) {
-        val src = element.attr("src").trim()
+        val src = imageInfo.src.trim()
         if (src.isBlank()) return
-        if (isClassicEpub && element.attr("data-epub-background") == "true") {
+        if (isClassicEpub && imageInfo.isBackground) {
             ImageProvider.cacheImage(book, src, ReadBook.bookSource)
             if (pendingTextPage.lines.isNotEmpty() || pendingTextPage.epubBackgroundSrc != null) {
                 prepareNextPageIfNeed()
@@ -1531,11 +1370,9 @@ class TextChapterLayout(
             }
             return
         }
-        var style = element.attr("data-legado-style").ifBlank { null }
-        val width = element.attr("data-legado-width")
-            .ifBlank { element.attr("width") }
-            .ifBlank { element.cssWidth() }
-        val click = element.attr("data-legado-click").ifBlank { null }
+        var style = imageInfo.style.ifBlank { null }
+        val width = imageInfo.width
+        val click = imageInfo.click.ifBlank { null }
         var imgSize = ImageProvider.getImageSize(book, src, ReadBook.bookSource)
         imgSize = imgSize.applyWidth(width)
         if (style == null) {
@@ -1553,28 +1390,6 @@ class TextChapterLayout(
             imgSize,
             click
         )
-    }
-
-    private fun Element.hasHtmlImage(): Boolean {
-        if (normalName() == "img") return true
-        return children().any { it.hasHtmlImage() }
-    }
-
-    private fun Element.isHtmlBlock(): Boolean {
-        return when (normalName()) {
-            "address", "article", "aside", "blockquote", "body", "center", "dd", "details",
-            "dialog", "div", "dl", "dt", "fieldset", "figcaption", "figure", "footer",
-            "form", "h1", "h2", "h3", "h4", "h5", "h6", "header", "hr", "li", "main",
-            "nav", "ol", "p", "pre", "section", "table", "tbody", "td", "tfoot", "th",
-            "thead", "tr", "ul" -> true
-            else -> false
-        }
-    }
-
-    private fun Element.cssWidth(): String {
-        val style = attr("style")
-        if (style.isBlank()) return ""
-        return EpubCss.declarations(style)["width"].orEmpty()
     }
 
     private fun Size.applyWidth(width: String): Size {
@@ -1678,10 +1493,10 @@ class TextChapterLayout(
                 var needAddText = true
                 spanned.getSpans(charIndex, charIndex + 1, ImageSpan::class.java).firstOrNull()?.let { span -> //处理图片
                     val source = span.source ?: return@let
-                    val urlMatcher = paramPattern.matcher(source)
+                    val urlMatcher = UrlOptions.paramPattern.matcher(source)
                     if (urlMatcher.find()) {
                         val urlOptionStr = source.substring(urlMatcher.end())
-                        val urlOption = GSON.fromJsonObject<Map<String, String>>(urlOptionStr).getOrNull() ?: return@let
+                        val urlOption = UrlOptions.parseStringMap(urlOptionStr, "TextChapterLayout.imageSpan")
                         var iStyle = urlOption["style"]
                         val width = urlOption["width"]
                         val click = urlOption["click"]
@@ -1888,34 +1703,11 @@ class TextChapterLayout(
     }
 
     private fun String.epubResourceAlignment(): Layout.Alignment {
-        val body = Jsoup.parseBodyFragment(this).body()
-        var align: String? = null
-        body.children().forEach { element ->
-            if (align != null) return@forEach
-            align = element.htmlAlignOrNull()
-            if (align == null) {
-                element.select("*").forEach { child ->
-                    if (align == null) {
-                        align = child.htmlAlignOrNull()
-                    }
-                }
-            }
-        }
-        return when (align) {
+        return when (RustAnalyzerBridge.htmlFirstAlignment(this, "TextChapterLayout.epubResourceAlignment")) {
             "center" -> Layout.Alignment.ALIGN_CENTER
             "right" -> Layout.Alignment.ALIGN_OPPOSITE
             else -> Layout.Alignment.ALIGN_NORMAL
         }
-    }
-
-    private fun Element.htmlAlignOrNull(): String? {
-        attr("align").trim().lowercase().takeIf { it in setOf("left", "center", "right") }?.let {
-            return it
-        }
-        epubCssValue("text-align").trim().lowercase().takeIf { it in setOf("left", "center", "right") }?.let {
-            return it
-        }
-        return null
     }
 
     private fun extractTextColor(spanned: Spanned, index: Int): Int? {

@@ -21,6 +21,7 @@ import io.legado.app.data.entities.RssSource
 import io.legado.app.databinding.DialogCustomGroupBinding
 import io.legado.app.databinding.DialogRecyclerViewBinding
 import io.legado.app.databinding.ItemSourceImportBinding
+import io.legado.app.exception.NoStackTraceException
 import io.legado.app.help.config.AppConfig
 import io.legado.app.lib.dialogs.alert
 import io.legado.app.lib.theme.primaryColor
@@ -218,10 +219,14 @@ class ImportRssSourceDialog() : BaseDialogFragment(R.layout.dialog_recycler_view
 
     override fun onCodeSave(code: String, requestId: String?) {
         requestId?.toInt()?.let {
-            GSON.fromJsonObject<RssSource>(code).getOrNull()?.let { source ->
-                viewModel.allSources[it] = source
-                adapter.setItem(it, source)
+            val source = GSON.fromJsonObject<RssSource>(code).getOrElse { error ->
+                throw NoStackTraceException(
+                    "ImportRssSourceDialog code JSON is invalid for Rust analyzer handoff: " +
+                            (error.localizedMessage ?: error::class.java.name)
+                )
             }
+            viewModel.allSources[it] = source
+            adapter.setItem(it, source)
         }
     }
 

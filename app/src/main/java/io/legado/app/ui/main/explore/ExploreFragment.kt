@@ -19,7 +19,6 @@ import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
-import com.script.rhino.runScriptWithContext
 import io.legado.app.R
 import io.legado.app.base.VMBaseFragment
 import io.legado.app.constant.AppLog
@@ -48,6 +47,7 @@ import io.legado.app.ui.book.search.SearchActivity
 import io.legado.app.ui.book.source.edit.BookSourceEditActivity
 import io.legado.app.ui.login.SourceLoginActivity
 import io.legado.app.ui.login.SourceLoginJsExtensions
+import io.legado.app.ui.main.explore.evalExploreButtonClickByRust
 import io.legado.app.ui.main.MainFragmentInterface
 import io.legado.app.ui.widget.ExpandableTagSelector
 import io.legado.app.ui.widget.RoundedTagBarView
@@ -1111,15 +1111,8 @@ class ExploreFragment() : VMBaseFragment<ExploreViewModel>(R.layout.fragment_exp
                     source.clearExploreKindsCache()
                     val action = item.kind.action?.takeIf { it.isNotBlank() }
                     if (!action.isNullOrBlank()) {
-                        runScriptWithContext {
-                            source.evalJS(action) {
-                                put(
-                                    "java",
-                                    discoverJsExtensions(source, refreshController)
-                                )
-                                put("infoMap", infoMap)
-                            }
-                        }
+                        val java = discoverJsExtensions(source, refreshController)
+                        evalExploreButtonClickByRust(source, infoMap, java, action)
                     }
                 }
                 loadDiscoverKindsAndDefault()
@@ -1159,29 +1152,22 @@ class ExploreFragment() : VMBaseFragment<ExploreViewModel>(R.layout.fragment_exp
         discoverActionJob?.cancel()
         discoverActionJob = viewLifecycleOwner.lifecycleScope.launch {
             try {
-            val result = withContext(IO) {
-                kotlin.runCatching {
-                    runScriptWithContext {
-                        source.evalJS(script) {
-                            put(
-                                "java",
-                                discoverJsExtensions(source, refreshController)
-                            )
-                            put("infoMap", infoMap)
-                        }
+                val java = discoverJsExtensions(source, refreshController)
+                val result = withContext(IO) {
+                    kotlin.runCatching {
+                        evalExploreButtonClickByRust(source, infoMap, java, script)
                     }
                 }
-            }
-            if (refreshController.requested && isAdded) {
-                withContext(IO) {
-                    source.clearExploreKindsCache()
+                if (refreshController.requested && isAdded) {
+                    withContext(IO) {
+                        source.clearExploreKindsCache()
+                    }
+                    loadDiscoverKindsAndDefault()
                 }
-                loadDiscoverKindsAndDefault()
-            }
-            result.onFailure {
-                AppLog.put("发现 URL 脚本执行失败: ${item.text}", it)
-                context?.toastOnUi(it.localizedMessage ?: getString(R.string.unknown_error))
-            }
+                result.onFailure {
+                    AppLog.put("发现 URL 脚本执行失败: ${item.text}", it)
+                    context?.toastOnUi(it.localizedMessage ?: getString(R.string.unknown_error))
+                }
             } finally {
                 refreshController.finish()
             }
@@ -1214,13 +1200,13 @@ class ExploreFragment() : VMBaseFragment<ExploreViewModel>(R.layout.fragment_exp
         discoverActionJob?.cancel()
         discoverActionJob = viewLifecycleOwner.lifecycleScope.launch {
             try {
-            val result = withContext(IO) {
-                kotlin.runCatching {
-                    var handledByAction = false
-                    val java = discoverJsExtensions(
-                        source,
-                        refreshController
-                    ) { name, url, title, origin ->
+                val result = withContext(IO) {
+                    kotlin.runCatching {
+                        var handledByAction = false
+                        val java = discoverJsExtensions(
+                            source,
+                            refreshController
+                        ) { name, url, title, origin ->
                             if (!isAdded) return@discoverJsExtensions false
                             if (name != "explore") return@discoverJsExtensions false
                             handledByAction = true
@@ -1234,32 +1220,27 @@ class ExploreFragment() : VMBaseFragment<ExploreViewModel>(R.layout.fragment_exp
                                 openExplore(targetSourceUrl, targetTitle, targetUrl)
                             }
                             true
-                    }
-                    runScriptWithContext {
-                        source.evalJS(action) {
-                            put("java", java)
-                            put("infoMap", infoMap)
                         }
-                    }
-                    when {
-                        handledByAction || isNavigationAction -> null
-                        else -> {
-                            source.clearExploreKindsCache()
-                            source.exploreKinds()
+                        evalExploreButtonClickByRust(source, infoMap, java, action)
+                        when {
+                            handledByAction || isNavigationAction -> null
+                            else -> {
+                                source.clearExploreKindsCache()
+                                source.exploreKinds()
+                            }
                         }
                     }
                 }
-            }
-            if (!isAdded) return@launch
-            result.onSuccess { kinds ->
-                if (kinds == null) {
-                    return@onSuccess
+                if (!isAdded) return@launch
+                result.onSuccess { kinds ->
+                    if (kinds == null) {
+                        return@onSuccess
+                    }
+                    applyDiscoverButtonResult(source, action, kinds)
+                }.onFailure {
+                    AppLog.put("发现标签按钮执行失败", it)
+                    context?.toastOnUi(it.localizedMessage ?: getString(R.string.unknown_error))
                 }
-                applyDiscoverButtonResult(source, action, kinds)
-            }.onFailure {
-                AppLog.put("发现标签按钮执行失败", it)
-                context?.toastOnUi(it.localizedMessage ?: getString(R.string.unknown_error))
-            }
             } finally {
                 refreshController.finish()
             }
@@ -1363,10 +1344,16 @@ class ExploreFragment() : VMBaseFragment<ExploreViewModel>(R.layout.fragment_exp
                 if (!isAdded || requestVersion != discoverRequestVersion || url != discoverCurrentUrl) {
                     return@launch
                 }
-                AppLog.put("新版发现页加载失败", e)
+                val message = e.localizedMessage ?: getString(R.string.unknown_error)
+                AppLog.put(
+                    "Discover Rust explore load failed for ${source.bookSourceName} page $discoverPage\n$message",
+                    e
+                )
                 if (discoverBooks.isEmpty()) {
-                    binding.tvDiscoverEmpty.text = e.localizedMessage ?: getString(R.string.unknown_error)
+                    binding.tvDiscoverEmpty.text = getString(R.string.error_load_msg, message)
                     binding.tvDiscoverEmpty.visible()
+                } else {
+                    context?.toastOnUi(getString(R.string.error_load_msg, message))
                 }
             } finally {
                 if (isAdded) {

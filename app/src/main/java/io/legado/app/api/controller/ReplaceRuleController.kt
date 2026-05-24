@@ -22,15 +22,18 @@ object ReplaceRuleController {
     fun saveRule(postData: String?): ReturnData {
         val returnData = ReturnData()
         postData ?: return returnData.setErrorMsg("数据不能为空")
-        val rule = GSON.fromJsonObject<ReplaceRule>(postData).getOrNull()
-        if (rule == null) {
-            returnData.setErrorMsg("格式不对")
-        } else {
-            if (rule.order == Int.MIN_VALUE) {
-                rule.order = appDb.replaceRuleDao.maxOrder + 1
-            }
-            appDb.replaceRuleDao.insert(rule)
+        val rule = GSON.fromJsonObject<ReplaceRule>(postData).getOrElse {
+            return returnData.setErrorMsg(
+                "ReplaceRuleController.saveRule JSON is invalid for Rust analyzer handoff: ${it.localizedMessage}"
+            )
         }
+        if (rule.pattern.isEmpty()) {
+            return returnData.setErrorMsg("替换规则不能为空")
+        }
+        if (rule.order == Int.MIN_VALUE) {
+            rule.order = appDb.replaceRuleDao.maxOrder + 1
+        }
+        appDb.replaceRuleDao.insert(rule)
         return returnData
     }
 
@@ -38,12 +41,12 @@ object ReplaceRuleController {
     fun delete(postData: String?): ReturnData {
         val returnData = ReturnData()
         postData ?: return returnData.setErrorMsg("数据不能为空")
-        val rule = GSON.fromJsonObject<ReplaceRule>(postData).getOrNull()
-        if (rule == null) {
-            returnData.setErrorMsg("格式不对")
-        } else {
-            appDb.replaceRuleDao.delete(rule)
+        val rule = GSON.fromJsonObject<ReplaceRule>(postData).getOrElse {
+            return returnData.setErrorMsg(
+                "ReplaceRuleController.delete JSON is invalid for Rust analyzer handoff: ${it.localizedMessage}"
+            )
         }
+        appDb.replaceRuleDao.delete(rule)
         return returnData
     }
 
@@ -57,41 +60,39 @@ object ReplaceRuleController {
     fun testRule(postData: String?): ReturnData {
         val returnData = ReturnData()
         postData ?: return returnData.setErrorMsg("数据不能为空")
-        val map = GSON.fromJsonObject<Map<String, *>>(postData).getOrNull()
-        if (map == null) {
-            returnData.setErrorMsg("格式不对")
-        } else {
-            val rule = map["rule"]?.let {
-                if (it is String) {
-                    GSON.fromJsonObject<ReplaceRule>(it).getOrNull()
-                } else {
-                    GSON.fromJsonObject<ReplaceRule>(GSON.toJson(it)).getOrNull()
-                }
-            }
-            if (rule == null) {
-                returnData.setErrorMsg("格式不对")
-                return returnData
-            }
-            if (rule.pattern.isEmpty()) {
-                returnData.setErrorMsg("替换规则不能为空")
-            }
-            val text = map["text"] as String
-            val content = try {
-                if (rule.isRegex) {
-                    text.replace(
-                        rule.name,
-                        rule.pattern.toRegex(),
-                        rule.replacement,
-                        rule.getValidTimeoutMillisecond()
-                    )
-                } else {
-                    text.replace(rule.pattern, rule.replacement)
-                }
-            } catch (e: Exception) {
-                e.stackTraceStr
-            }
-            returnData.setData(content)
+        val map = GSON.fromJsonObject<Map<String, *>>(postData).getOrElse {
+            return returnData.setErrorMsg(
+                "ReplaceRuleController.testRule JSON is invalid for Rust analyzer handoff: ${it.localizedMessage}"
+            )
         }
+        val ruleJson = map["rule"]?.let {
+            if (it is String) it else GSON.toJson(it)
+        } ?: return returnData.setErrorMsg("ReplaceRuleController.testRule missing rule for Rust analyzer handoff")
+        val rule = GSON.fromJsonObject<ReplaceRule>(ruleJson).getOrElse {
+            return returnData.setErrorMsg(
+                "ReplaceRuleController.testRule rule JSON is invalid for Rust analyzer handoff: ${it.localizedMessage}"
+            )
+        }
+        if (rule.pattern.isEmpty()) {
+            return returnData.setErrorMsg("替换规则不能为空")
+        }
+        val text = map["text"] as? String
+            ?: return returnData.setErrorMsg("ReplaceRuleController.testRule missing text for Rust analyzer handoff")
+        val content = try {
+            if (rule.isRegex) {
+                text.replace(
+                    rule.name,
+                    rule.pattern.toRegex(),
+                    rule.replacement,
+                    rule.getValidTimeoutMillisecond()
+                )
+            } else {
+                text.replace(rule.pattern, rule.replacement)
+            }
+        } catch (e: Exception) {
+            e.stackTraceStr
+        }
+        returnData.setData(content)
         return returnData
     }
 

@@ -45,31 +45,33 @@ class BookSourceDebugWebSocket(handshakeRequest: NanoHTTPD.IHTTPSession) :
 
     override fun onMessage(message: NanoWSD.WebSocketFrame) {
         launch(IO) {
-            kotlin.runCatching {
+            try {
                 if (!message.textPayload.isJson()) {
                     send("数据必须为Json格式")
                     close(NanoWSD.WebSocketFrame.CloseCode.NormalClosure, "调试结束", false)
                     return@launch
                 }
-                val debugBean =
-                    GSON.fromJsonObject<Map<String, String>>(message.textPayload).getOrNull()
-                if (debugBean != null) {
-                    val tag = debugBean["tag"]
-                    val key = debugBean["key"]
-                    if (tag.isNullOrBlank() || key.isNullOrBlank()) {
-                        send(appCtx.getString(R.string.cannot_empty))
-                        close(NanoWSD.WebSocketFrame.CloseCode.NormalClosure, "调试结束", false)
-                        return@launch
+                val debugBean = GSON.fromJsonObject<Map<String, String>>(message.textPayload)
+                    .getOrElse {
+                        throw IllegalArgumentException(
+                            "BookSourceDebugWebSocket message JSON is invalid for Rust analyzer handoff: " +
+                                (it.localizedMessage ?: it::class.java.name)
+                        )
                     }
-                    appDb.bookSourceDao.getBookSource(tag)?.let {
-                        Debug.callback = this@BookSourceDebugWebSocket
-                        Debug.startDebug(this, it, key)
-                    }
-                } else {
-                    send("数据必须为Json格式")
+                val tag = debugBean["tag"]
+                val key = debugBean["key"]
+                if (tag.isNullOrBlank() || key.isNullOrBlank()) {
+                    send(appCtx.getString(R.string.cannot_empty))
                     close(NanoWSD.WebSocketFrame.CloseCode.NormalClosure, "调试结束", false)
                     return@launch
                 }
+                appDb.bookSourceDao.getBookSource(tag)?.let {
+                    Debug.callback = this@BookSourceDebugWebSocket
+                    Debug.startDebug(this, it, key)
+                }
+            } catch (e: Throwable) {
+                send(e.localizedMessage ?: e::class.java.name)
+                close(NanoWSD.WebSocketFrame.CloseCode.NormalClosure, "调试结束", false)
             }
         }
     }

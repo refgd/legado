@@ -2,8 +2,9 @@ package io.legado.app.help.ai
 
 import io.legado.app.data.appDb
 import io.legado.app.data.entities.BookSource
+import io.legado.app.exception.NoStackTraceException
 import io.legado.app.model.Debug
-import io.legado.app.model.analyzeRule.AnalyzeUrl
+import io.legado.app.model.webBook.RustAnalyzerBridge
 import io.legado.app.utils.GSON
 import io.legado.app.utils.fromJsonObject
 import kotlinx.coroutines.CompletableDeferred
@@ -12,7 +13,6 @@ import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.URI
-import kotlin.coroutines.coroutineContext
 
 object AiBookSourceTool {
 
@@ -163,7 +163,7 @@ object AiBookSourceTool {
                 put("name", TOOL_FETCH_HTML)
                 put(
                     "description",
-                    "按 Legado 的 AnalyzeUrl/书源配置真实获取网页 HTML，用于书源 agent 分析搜索页、详情页、目录页、正文页。可传 sourceJson 或 bookSourceUrl 复用书源 header/cookie/webView 配置；返回状态码、最终 URL、HTML 片段。"
+                    "按 Legado Rust analyzer 的 URL/书源配置真实获取网页 HTML，用于书源 agent 分析搜索页、详情页、目录页、正文页。可传 sourceJson 或 bookSourceUrl 复用书源 header/cookie/webView 配置；返回状态码、最终 URL、HTML 片段。"
                 )
                 put("parameters", JSONObject().apply {
                     put("type", "object")
@@ -228,7 +228,8 @@ object AiBookSourceTool {
     }
 
     private fun createBookSource(args: JSONObject?): String {
-        val source = resolveSource(args, allowDbLookup = false) ?: return error("缺少 sourceJson 或 bookSourceUrl")
+        val source = resolveSource(args, allowDbLookup = false)
+            ?: throw NoStackTraceException("AiBookSourceTool create_book_source missing sourceJson or bookSourceUrl")
         val save = args?.optBoolean("save", false) == true
         if (save) {
             appDb.bookSourceDao.insert(source)
@@ -249,8 +250,10 @@ object AiBookSourceTool {
             }
         }
         if (sourceUrls.isNotEmpty()) {
-            val sources = sourceUrls.mapNotNull { appDb.bookSourceDao.getBookSource(it) }
-            if (sources.isEmpty()) return error("未找到指定书源")
+            val sources = sourceUrls.map { url ->
+                appDb.bookSourceDao.getBookSource(url)
+                    ?: throw NoStackTraceException("AiBookSourceTool get_book_source missing source: $url")
+            }
             return ok().apply {
                 if (sources.size == 1) {
                     put("source", JSONObject(GSON.toJson(sources.first())))
@@ -269,7 +272,7 @@ object AiBookSourceTool {
             }
         }
         if (searchKeys.isEmpty()) {
-            return error("缺少 bookSourceUrl 或 searchKey")
+            throw NoStackTraceException("AiBookSourceTool get_book_source missing bookSourceUrl or searchKey")
         }
         val limit = (args?.optInt("limit", 10) ?: 10).coerceIn(1, 30)
         val sources = appDb.bookSourceDao.all.filter { source ->
@@ -311,8 +314,7 @@ object AiBookSourceTool {
                 "缺少修改内容。请传 patch，例如 {\"ruleToc\":{\"chapterList\":\".list dd\",\"chapterName\":\"a@text\",\"chapterUrl\":\"a@href\"}}，也可以直接传 ruleToc/ruleContent/searchUrl 等字段。"
             )
         }
-        val updated = GSON.fromJsonObject<BookSource>(merged.toString()).getOrNull()
-            ?: return error("修改后的书源 JSON 无法解析")
+        val updated = parseBookSourceJson(merged.toString(), "AiBookSourceTool.updateBookSource")
         val save = args.optBoolean("save", false)
         if (save) {
             appDb.bookSourceDao.insert(updated)
@@ -329,35 +331,28 @@ object AiBookSourceTool {
         if (url.isBlank()) {
             return@coroutineScope error("缺少 url")
         }
-        val timeoutMs = (args.optLong("timeoutMs", 45_000L)).coerceIn(10_000L, 90_000L)
         val maxChars = (args.optInt("maxChars", 20_000)).coerceIn(1_000, 80_000)
-        val source = resolveSource(args, allowDbLookup = true) ?: temporarySourceFor(url)
-        runCatching {
-            val response = AnalyzeUrl(
-                mUrl = url,
-                source = source,
-                callTimeout = timeoutMs,
-                coroutineContext = coroutineContext
-            ).getStrResponseAwait(
-                jsStr = args.optString("js").takeIf { it.isNotBlank() },
-                sourceRegex = args.optString("sourceRegex").takeIf { it.isNotBlank() },
-                useWebView = args.optBoolean("useWebView", true),
-                isTest = true
-            )
-            val body = response.body.orEmpty()
-            ok().apply {
-                put("url", url)
-                put("finalUrl", response.url)
-                put("statusCode", response.code())
-                put("message", response.message())
-                put("callTime", response.callTime)
-                put("htmlLength", body.length)
-                put("truncated", body.length > maxChars)
-                put("html", body.take(maxChars))
-            }.toString()
-        }.getOrElse { throwable ->
-            error(throwable.localizedMessage ?: throwable.javaClass.simpleName)
+        if (args.optString("js").isNotBlank() || args.optString("sourceRegex").isNotBlank()) {
+            return@coroutineScope error("fetch_source_html 的 js/sourceRegex 需要 WebView 平台边界，Rust analyzer 不在 Android 侧预处理")
         }
+        val source = resolveSource(args, allowDbLookup = true) ?: temporarySourceFor(url)
+        val response = RustAnalyzerBridge.fetchText(
+            url = url,
+            source = source,
+            useWebView = args.optBoolean("useWebView", true),
+            rulePath = "AiBookSourceTool.fetchSourceHtml"
+        )
+        val body = response.body
+        ok().apply {
+            put("url", url)
+            put("finalUrl", response.url)
+            put("statusCode", response.statusCode)
+            put("message", response.message)
+            put("callTime", 0)
+            put("htmlLength", body.length)
+            put("truncated", body.length > maxChars)
+            put("html", body.take(maxChars))
+        }.toString()
     }
 
     private suspend fun debugBookSource(args: JSONObject?): String = coroutineScope {
@@ -392,7 +387,7 @@ object AiBookSourceTool {
     private fun resolveSource(args: JSONObject?, allowDbLookup: Boolean): BookSource? {
         args ?: return null
         args.optString("sourceJson").takeIf { it.isNotBlank() }?.let { json ->
-            GSON.fromJsonObject<BookSource>(json).getOrNull()?.let { return it }
+            return parseBookSourceJson(json, "AiBookSourceTool.resolveSource")
         }
         val sourceUrl = args.optString("bookSourceUrl").trim()
         if (allowDbLookup && sourceUrl.isNotBlank()) {
@@ -434,7 +429,13 @@ object AiBookSourceTool {
     private fun readPatch(args: JSONObject): JSONObject {
         val directPatch = when (val value = args.opt("patch")) {
             is JSONObject -> value
-            is String -> value.takeIf { it.isNotBlank() }?.let { runCatching { JSONObject(it) }.getOrNull() }
+            is String -> value.takeIf { it.isNotBlank() }?.let {
+                runCatching { JSONObject(it) }.getOrElse { error ->
+                    throw NoStackTraceException(
+                        "AiBookSourceTool patch JSON is invalid for Rust analyzer handoff: ${error.localizedMessage}"
+                    )
+                }
+            }
             else -> null
         } ?: JSONObject()
         val generatedPatch = JSONObject()
@@ -453,12 +454,16 @@ object AiBookSourceTool {
     }
 
     private fun temporarySourceFor(url: String): BookSource {
-        val host = runCatching { URI(url).host.orEmpty() }.getOrDefault("")
+        val uri = try {
+            URI(url)
+        } catch (e: Exception) {
+            throw NoStackTraceException(
+                "AiBookSourceTool temporary source URL is invalid for Rust analyzer handoff: $url; ${e.localizedMessage}"
+            )
+        }
+        val host = uri.host.orEmpty()
         val origin = if (host.isNotBlank()) {
-            runCatching {
-                val uri = URI(url)
-                "${uri.scheme}://${uri.host}"
-            }.getOrDefault(url)
+            "${uri.scheme}://${uri.host}"
         } else {
             url
         }
@@ -469,7 +474,19 @@ object AiBookSourceTool {
     }
 
     private inline fun <reified T> JSONObject.toRule(): T? {
-        return GSON.fromJsonObject<T>(toString()).getOrNull()
+        return GSON.fromJsonObject<T>(toString()).getOrElse {
+            throw NoStackTraceException(
+                "AiBookSourceTool rule JSON is invalid for Rust analyzer handoff: ${it.localizedMessage}"
+            )
+        }
+    }
+
+    private fun parseBookSourceJson(json: String, rulePath: String): BookSource {
+        return GSON.fromJsonObject<BookSource>(json).getOrElse {
+            throw NoStackTraceException(
+                "$rulePath BookSource JSON is invalid for Rust analyzer handoff: ${it.localizedMessage}"
+            )
+        }
     }
 
     private fun stringProp(description: String) = JSONObject().apply {

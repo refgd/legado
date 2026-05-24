@@ -10,7 +10,7 @@ import io.legado.app.exception.NoStackTraceException
 import io.legado.app.help.config.AppConfig
 import io.legado.app.ui.book.search.SearchScope
 import io.legado.app.utils.getPrefBoolean
-import io.legado.app.utils.mapParallelSafe
+import io.legado.app.utils.mapParallel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExecutorCoroutineDispatcher
 import kotlinx.coroutines.Job
@@ -96,7 +96,7 @@ class SearchModel(private val scope: CoroutineScope, private val callBack: CallB
                 }
             }.onStart {
                 callBack.onSearchStart()
-            }.mapParallelSafe(threadCount) {
+            }.mapParallel(threadCount) {
                 withTimeout(30000L) {
                     WebBook.searchBookAwait(
                         it, searchKey, searchPage,
@@ -118,7 +118,14 @@ class SearchModel(private val scope: CoroutineScope, private val callBack: CallB
             }.onCompletion {
                 if (it == null) callBack.onSearchFinish(searchBooks.isEmpty(), hasMore)
             }.catch {
-                AppLog.put("书源搜索出错\n${it.localizedMessage}", it)
+                if (it.isRustNetworkAccessError()) {
+                    AppLog.put("SearchModel network load failed for $searchKey\n${it.localizedMessage}", it)
+                    callBack.onSearchCancel(it)
+                    return@catch
+                }
+                throw NoStackTraceException(
+                    "SearchModel Rust search failed for $searchKey: ${it.localizedMessage ?: it}"
+                )
             }.collect()
         }
     }

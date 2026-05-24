@@ -1,14 +1,16 @@
 package io.legado.app.help.ai
 
 import io.legado.app.R
+import io.legado.app.constant.BookSourceType
+import io.legado.app.data.entities.BookSource
+import io.legado.app.exception.NoStackTraceException
 import io.legado.app.help.config.AppConfig
-import io.legado.app.help.http.addHeaders
-import io.legado.app.help.http.newCallResponse
-import io.legado.app.help.http.okHttpClient
-import io.legado.app.help.http.postJson
+import io.legado.app.model.webBook.RustAnalyzerBridge
+import io.legado.app.model.webBook.RustRawFetchResult
 import io.legado.app.ui.main.ai.AiChatException
 import io.legado.app.ui.main.ai.AiChatMessage
 import io.legado.app.ui.main.ai.AiProviderConfig
+import io.legado.app.utils.GSON
 import org.json.JSONArray
 import org.json.JSONObject
 import splitties.init.appCtx
@@ -51,33 +53,43 @@ object AiChatService {
     suspend fun fetchModels(provider: AiProviderConfig): List<String> {
         val baseUrl = provider.baseUrl.trim()
         require(baseUrl.isNotBlank()) { "Base URL is empty" }
-        val response = okHttpClient.newCallResponse {
-            url(resolveModelsUrl(baseUrl))
-            addHeader("Accept", "application/json")
-            provider.apiKey.trim().takeIf { it.isNotBlank() }?.let {
-                addHeader("Authorization", "Bearer $it")
-            }
-            addHeaders(parseCustomHeaders(provider.headers.orEmpty()))
-        }
-        response.use { rawResponse ->
-            val payload = rawResponse.body?.string().orEmpty()
-            if (!rawResponse.isSuccessful) {
-                throw AiChatException(
-                    message = extractError(payload).ifBlank {
-                        "${rawResponse.code} ${rawResponse.message}"
-                    },
-                    debugLog = "url=${resolveModelsUrl(baseUrl)}\nresponse=$payload\n"
+        val modelsUrl = resolveModelsUrl(baseUrl)
+        val rawResponse = RustAnalyzerBridge.fetchRawResponse(
+            source = BookSource(
+                bookSourceUrl = modelsUrl,
+                bookSourceName = "AI models",
+                bookSourceType = BookSourceType.default,
+                header = GSON.toJson(
+                    buildMap {
+                        put("Accept", "application/json")
+                        provider.apiKey.trim().takeIf { it.isNotBlank() }?.let {
+                            put("Authorization", "Bearer $it")
+                        }
+                        putAll(parseCustomHeaders(provider.headers.orEmpty()))
+                    }
                 )
-            }
-            val root = JSONObject(payload)
-            val data = root.optJSONArray("data") ?: return emptyList()
-            return buildList {
-                for (index in 0 until data.length()) {
-                    val item = data.optJSONObject(index) ?: continue
-                    item.optString("id").trim().takeIf { it.isNotBlank() }?.let(::add)
-                }
-            }.distinct()
+            ),
+            url = modelsUrl,
+            rulePath = "AiChatService.fetchModels"
+        )
+        val payload = rawResponse.body.toString(Charsets.UTF_8)
+        if (rawResponse.code !in 200..299) {
+            throw AiChatException(
+                message = extractError(payload).ifBlank {
+                    "${rawResponse.code} ${rawResponse.message}"
+                },
+                debugLog = "url=$modelsUrl\nresponse=$payload\n"
+            )
         }
+        val root = JSONObject(payload)
+        val data = root.optJSONArray("data") ?: return emptyList()
+        return buildList {
+            for (index in 0 until data.length()) {
+                val item = data.optJSONObject(index) ?: continue
+                item.optString("id").trim().takeIf { it.isNotBlank() }?.let(::add)
+            }
+        }
+            .distinct()
     }
 
     suspend fun chatStream(
@@ -94,7 +106,7 @@ object AiChatService {
         require(baseUrl.isNotBlank()) { "Base URL is empty" }
         require(model.isNotBlank()) { "Model is empty" }
 
-        val tools = runCatching { AiToolRegistry.resolveAvailableTools() }.getOrDefault(emptyList())
+        val tools = AiToolRegistry.resolveAvailableTools()
         val conversation = buildConversation(messages)
         val requestLog = StringBuilder().apply {
             append("url=${resolveChatUrl(baseUrl)}").append('\n')
@@ -265,25 +277,27 @@ object AiChatService {
         cards: JSONArray
     ) {
         if (toolCall.name != "search_book_source") return
-        runCatching {
-            val results = JSONObject(result).optJSONArray("results") ?: return
-            for (index in 0 until results.length()) {
-                if (cards.length() >= MAX_SEARCH_RESULT_CARDS) break
-                val item = results.optJSONObject(index) ?: continue
-                if (item.optString("bookUrl").isBlank() || item.optString("origin").isBlank()) continue
-                cards.put(JSONObject().apply {
-                    put("name", item.optString("name").take(80))
-                    put("author", item.optString("author").take(60))
-                    put("originName", item.optString("originName").take(60))
-                    put("kind", item.optString("kind").take(80))
-                    put("intro", item.optString("intro").replace(Regex("\\s+"), " ").trim().take(160))
-                    put("latestChapterTitle", item.optString("latestChapterTitle").take(80))
-                    put("coverUrl", item.optString("coverUrl"))
-                    put("bookUrl", item.optString("bookUrl"))
-                    put("origin", item.optString("origin"))
-                    put("target", item.optString("target"))
-                })
+        val results = JSONObject(result).optJSONArray("results")
+            ?: throw NoStackTraceException("AiChatService search_book_source result missing results array")
+        for (index in 0 until results.length()) {
+            if (cards.length() >= MAX_SEARCH_RESULT_CARDS) break
+            val item = results.optJSONObject(index)
+                ?: throw NoStackTraceException("AiChatService search_book_source result item $index is not an object")
+            if (item.optString("bookUrl").isBlank() || item.optString("origin").isBlank()) {
+                throw NoStackTraceException("AiChatService search_book_source result item $index missing bookUrl/origin")
             }
+            cards.put(JSONObject().apply {
+                put("name", item.optString("name").take(80))
+                put("author", item.optString("author").take(60))
+                put("originName", item.optString("originName").take(60))
+                put("kind", item.optString("kind").take(80))
+                put("intro", item.optString("intro").replace(Regex("\\s+"), " ").trim().take(160))
+                put("latestChapterTitle", item.optString("latestChapterTitle").take(80))
+                put("coverUrl", item.optString("coverUrl"))
+                put("bookUrl", item.optString("bookUrl"))
+                put("origin", item.optString("origin"))
+                put("target", item.optString("target"))
+            })
         }
     }
 
@@ -311,9 +325,7 @@ object AiChatService {
     }
 
     private fun parseToolResultSuccess(result: String): Boolean {
-        return runCatching {
-            JSONObject(result).optBoolean("ok", true)
-        }.getOrDefault(true)
+        return JSONObject(result).optBoolean("ok", true)
     }
 
     private suspend fun executeToolCall(
@@ -334,15 +346,8 @@ object AiChatService {
                 put("error", "Unknown tool: ${toolCall.name}")
             }.toString()
         }
-        return runCatching {
-            val arguments = toolCall.arguments.trim().takeIf { it.isNotBlank() }?.let(::JSONObject)
-            resolvedTool.execute(arguments)
-        }.getOrElse { throwable ->
-            JSONObject().apply {
-                put("ok", false)
-                put("error", throwable.message ?: throwable.javaClass.simpleName)
-            }.toString()
-        }
+        val arguments = toolCall.arguments.trim().takeIf { it.isNotBlank() }?.let(::JSONObject)
+        return resolvedTool.execute(arguments)
     }
 
     private suspend fun requestCompletionStream(
@@ -360,81 +365,109 @@ object AiChatService {
         val requestBody = buildRequestBody(messages, model, tools, stream = true)
         requestLog.append("round=").append(round).append('\n')
             .append("request=").append(requestBody).append('\n')
-        val response = okHttpClient.newCallResponse {
-            url(resolveChatUrl(baseUrl))
-            addHeader("Accept", "text/event-stream, application/json")
-            addHeader("Content-Type", "application/json")
-            providerApiKey.trim().takeIf { it.isNotBlank() }?.let {
-                addHeader("Authorization", "Bearer $it")
-            }
-            addHeaders(parseCustomHeaders(providerHeaders))
-            postJson(requestBody)
+        val rawResponse = fetchChatResponse(
+            baseUrl = baseUrl,
+            providerApiKey = providerApiKey,
+            providerHeaders = providerHeaders,
+            requestBody = requestBody
+        )
+        val payload = rawResponse.body.toString(Charsets.UTF_8)
+        if (rawResponse.code !in 200..299) {
+            throw AiChatException(
+                message = extractError(payload).ifBlank {
+                    "${rawResponse.code} ${rawResponse.message}"
+                },
+                debugLog = buildString {
+                    append(requestLog)
+                    append("status=${rawResponse.code} ${rawResponse.message}").append('\n')
+                    append("response=$payload").append('\n')
+                }
+            )
         }
-        response.use { rawResponse ->
-            val body = rawResponse.body ?: throw AiChatException(
+        if (payload.isEmpty()) {
+            throw AiChatException(
                 message = "Empty response body",
                 debugLog = requestLog.append("response=<empty body>\n").toString()
             )
-            if (!rawResponse.isSuccessful) {
-                val payload = body.string()
-                throw AiChatException(
-                    message = extractError(payload).ifBlank {
-                        "${rawResponse.code} ${rawResponse.message}"
-                    },
-                    debugLog = buildString {
-                        append(requestLog)
-                        append("status=${rawResponse.code} ${rawResponse.message}").append('\n')
-                        append("response=$payload").append('\n')
-                    }
-                )
-            }
-            val rendered = StringBuilder()
-            val rawRendered = StringBuilder()
-            val reasoningRendered = StringBuilder()
-            val rawPayload = StringBuilder()
-            val toolCallBuilders = linkedMapOf<Int, ToolCallBuilder>()
-            body.byteStream().bufferedReader().use { reader ->
-                while (true) {
-                    val rawLine = reader.readLine()?.trim() ?: break
-                    if (rawLine.isEmpty()) continue
-                    rawPayload.append(rawLine).append('\n')
-                    if (rawLine.startsWith("data:")) {
-                        val payload = rawLine.removePrefix("data:").trim()
-                        if (payload == "[DONE]") break
-                        consumeStreamPayload(payload, rawRendered, rendered, reasoningRendered, toolCallBuilders, onPartial, onThinking)
-                    } else if (rawLine.startsWith("{")) {
-                        consumeStreamPayload(rawLine, rawRendered, rendered, reasoningRendered, toolCallBuilders, onPartial, onThinking)
-                    }
-                }
-            }
-            requestLog.append("response=").append(rawPayload).append('\n')
-            val toolCalls = toolCallBuilders.map { (index, builder) ->
-                ToolCall(
-                    id = builder.id.ifBlank { "call_$index" },
-                    name = builder.name,
-                    arguments = builder.arguments.toString().ifBlank { "{}" }
-                )
-            }.filter { it.name.isNotBlank() }
-            if (rendered.isBlank() && toolCalls.isEmpty()) {
-                val fallback = runCatching { extractContent(rawPayload.toString()) }.getOrDefault("")
-                if (fallback.isNotBlank()) {
-                    val visibleFallback = stripInlineThinking(fallback, onThinking)
-                    onPartial(visibleFallback)
-                    return AssistantTurn(
-                        visibleFallback,
-                        emptyList(),
-                        buildAssistantRawMessage(visibleFallback, emptyList(), reasoningRendered.toString()),
-                        reasoningRendered.toString()
-                    )
-                }
-            }
-            return AssistantTurn(
-                content = rendered.toString(),
-                toolCalls = toolCalls,
-                rawMessage = buildAssistantRawMessage(rendered.toString(), toolCalls, reasoningRendered.toString()),
-                reasoningContent = reasoningRendered.toString()
-            )
         }
+        val rendered = StringBuilder()
+        val rawRendered = StringBuilder()
+        val reasoningRendered = StringBuilder()
+        val rawPayload = StringBuilder()
+        val toolCallBuilders = linkedMapOf<Int, ToolCallBuilder>()
+        for (line in payload.lineSequence()) {
+            val rawLine = line.trim()
+            if (rawLine.isEmpty()) continue
+            rawPayload.append(rawLine).append('\n')
+            if (rawLine.startsWith("data:")) {
+                val eventPayload = rawLine.removePrefix("data:").trim()
+                if (eventPayload == "[DONE]") break
+                consumeStreamPayload(eventPayload, rawRendered, rendered, reasoningRendered, toolCallBuilders, onPartial, onThinking)
+            } else if (rawLine.startsWith("{")) {
+                consumeStreamPayload(rawLine, rawRendered, rendered, reasoningRendered, toolCallBuilders, onPartial, onThinking)
+            }
+        }
+        requestLog.append("response=").append(rawPayload).append('\n')
+        val toolCalls = toolCallBuilders.map { (index, builder) ->
+            ToolCall(
+                id = builder.id.ifBlank { "call_$index" },
+                name = builder.name,
+                arguments = builder.arguments.toString().ifBlank { "{}" }
+            )
+        }.filter { it.name.isNotBlank() }
+        if (rendered.isBlank() && toolCalls.isEmpty()) {
+            val fallback = extractContent(rawPayload.toString())
+            if (fallback.isNotBlank()) {
+                val visibleFallback = stripInlineThinking(fallback, onThinking)
+                onPartial(visibleFallback)
+                return AssistantTurn(
+                    visibleFallback,
+                    emptyList(),
+                    buildAssistantRawMessage(visibleFallback, emptyList(), reasoningRendered.toString()),
+                    reasoningRendered.toString()
+                )
+            }
+        }
+        return AssistantTurn(
+            content = rendered.toString(),
+            toolCalls = toolCalls,
+            rawMessage = buildAssistantRawMessage(rendered.toString(), toolCalls, reasoningRendered.toString()),
+            reasoningContent = reasoningRendered.toString()
+        )
+    }
+
+    private fun fetchChatResponse(
+        baseUrl: String,
+        providerApiKey: String,
+        providerHeaders: String,
+        requestBody: String
+    ): RustRawFetchResult {
+        val chatUrl = resolveChatUrl(baseUrl)
+        val headers = buildMap {
+            put("Accept", "text/event-stream, application/json")
+            put("Content-Type", "application/json")
+            providerApiKey.trim().takeIf { it.isNotBlank() }?.let {
+                put("Authorization", "Bearer $it")
+            }
+            putAll(parseCustomHeaders(providerHeaders))
+        }
+        return RustAnalyzerBridge.fetchRawResponse(
+            source = BookSource(
+                bookSourceUrl = chatUrl,
+                bookSourceName = "AI chat",
+                bookSourceType = BookSourceType.default,
+                header = GSON.toJson(headers)
+            ),
+            url = "$chatUrl,${
+                GSON.toJson(
+                    mapOf(
+                        "method" to "POST",
+                        "body" to requestBody
+                    )
+                )
+            }",
+            rulePath = "AiChatService.chatStream"
+        )
     }
 
     private fun buildRequestBody(
@@ -692,7 +725,7 @@ object AiChatService {
     private fun parseCustomHeaders(rawHeaders: String): Map<String, String> {
         val text = rawHeaders.trim()
         if (text.isBlank()) return emptyMap()
-        runCatching {
+        if (text.startsWith("{")) {
             val json = JSONObject(text)
             return buildMap {
                 json.keys().forEach { key ->
@@ -704,13 +737,17 @@ object AiChatService {
         return text.lineSequence()
             .map { it.trim() }
             .filter { it.isNotBlank() && !it.startsWith("#") }
-            .mapNotNull { line ->
-                val separator = line.indexOf(':').takeIf { it > 0 } ?: line.indexOf('=').takeIf { it > 0 }
-                separator?.let {
-                    line.substring(0, it).trim() to line.substring(it + 1).trim()
+            .map { line ->
+                val separator = line.indexOf(':').takeIf { it > 0 }
+                    ?: line.indexOf('=').takeIf { it > 0 }
+                    ?: throw NoStackTraceException("AiChatService custom header line is malformed: $line")
+                val key = line.substring(0, separator).trim()
+                val value = line.substring(separator + 1).trim()
+                if (key.isBlank() || value.isBlank()) {
+                    throw NoStackTraceException("AiChatService custom header line has blank key/value: $line")
                 }
+                key to value
             }
-            .filter { it.first.isNotBlank() && it.second.isNotBlank() }
             .toMap()
     }
 
@@ -744,11 +781,15 @@ object AiChatService {
 
     private fun extractContent(body: String): String {
         val root = JSONObject(body)
-        val choices = root.optJSONArray("choices") ?: return root.optString("response")
-        val first = choices.optJSONObject(0) ?: return ""
+        val choices = root.optJSONArray("choices") ?: return root.optString("response").ifBlank {
+            throw NoStackTraceException("AiChatService response missing choices/response content")
+        }
+        val first = choices.optJSONObject(0)
+            ?: throw NoStackTraceException("AiChatService response first choice is missing")
         val message = first.optJSONObject("message")
         return extractContentText(message?.opt("content"))
             .ifBlank { first.optString("text") }
+            .ifBlank { throw NoStackTraceException("AiChatService response choice has no content") }
     }
 
     private fun extractContentText(content: Any?): String {

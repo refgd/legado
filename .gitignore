@@ -19,7 +19,4 @@ package-lock.json
 .cxx
 .vscode
 .env
-/.legado-cli/
-/target/
-export-patch.bat
-update.patch
+keystore

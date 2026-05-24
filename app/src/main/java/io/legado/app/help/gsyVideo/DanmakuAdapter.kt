@@ -7,40 +7,40 @@ import android.text.SpannableStringBuilder
 import android.text.Spanned
 import android.text.style.BackgroundColorSpan
 import android.text.style.ImageSpan
+import androidx.core.graphics.toColorInt
+import io.legado.app.model.webBook.RustAnalyzerBridge
 import master.flame.danmaku.controller.IDanmakuView
 import master.flame.danmaku.danmaku.model.BaseDanmaku
 import master.flame.danmaku.danmaku.model.android.BaseCacheStuffer
-import master.flame.danmaku.danmaku.util.IOUtils
-import java.io.IOException
-import java.io.InputStream
-import java.net.MalformedURLException
-import java.net.URL
-import androidx.core.graphics.toColorInt
+import java.io.ByteArrayInputStream
 
 class DanmakuAdapter(private val mDanmakuView: IDanmakuView?) : BaseCacheStuffer.Proxy() {
     private var mDrawable: Drawable? = null
 
+    companion object {
+        private const val INLINE_ICON_URL = "http://www.bilibili.com/favicon.ico"
+
+        fun fetchInlineIconBytes(url: String = INLINE_ICON_URL): ByteArray {
+            return RustAnalyzerBridge.fetchRawUrl(url, "DanmakuAdapter.inlineIcon").body
+        }
+    }
 
     override fun prepareDrawing(danmaku: BaseDanmaku, fromWorkerThread: Boolean) {
         if (danmaku.text is Spanned) { // 根据你的条件检查是否需要需要更新弹幕
             // FIXME 这里只是简单启个线程来加载远程url图片，请使用你自己的异步线程池，最好加上你的缓存池
             object : Thread() {
                 override fun run() {
-                    val url = "http://www.bilibili.com/favicon.ico"
-                    var inputStream: InputStream? = null
                     var drawable = mDrawable
                     if (drawable == null) {
                         try {
-                            val urlConnection = URL(url).openConnection()
-                            inputStream = urlConnection.getInputStream()
-                            drawable = BitmapDrawable.createFromStream(inputStream, "bitmap")
+                            val bytes = fetchInlineIconBytes()
+                            drawable = BitmapDrawable.createFromStream(
+                                ByteArrayInputStream(bytes),
+                                "bitmap"
+                            )
                             mDrawable = drawable
-                        } catch (e: MalformedURLException) {
+                        } catch (e: Exception) {
                             e.printStackTrace()
-                        } catch (e: IOException) {
-                            e.printStackTrace()
-                        } finally {
-                            IOUtils.closeQuietly(inputStream)
                         }
                     }
                     if (drawable != null) {

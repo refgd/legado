@@ -1,46 +1,24 @@
 package io.legado.app.lib.webdav
 
-import android.annotation.SuppressLint
 import android.net.Uri
-import cn.hutool.core.net.URLDecoder
 import io.legado.app.constant.AppLog
 import io.legado.app.exception.NoStackTraceException
-import io.legado.app.help.http.newCallResponse
-import io.legado.app.help.http.okHttpClient
-import io.legado.app.help.http.text
-import io.legado.app.model.analyzeRule.AnalyzeUrl
-import io.legado.app.model.analyzeRule.CustomUrl
-import io.legado.app.utils.NetworkUtils
-import io.legado.app.utils.findNS
-import io.legado.app.utils.findNSPrefix
-import io.legado.app.utils.printOnDebug
-import io.legado.app.utils.toRequestBody
+import io.legado.app.utils.CustomUrl
+import io.legado.app.model.webBook.RustAnalyzerBridge
+import io.legado.app.model.webBook.RustRawFetchResult
+import io.legado.app.utils.RustRemoteFetch
+import io.legado.app.utils.readBytes
+import splitties.init.appCtx
 import kotlinx.coroutines.Dispatchers.IO
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
-import okhttp3.HttpUrl.Companion.toHttpUrl
-import okhttp3.Interceptor
-import okhttp3.MediaType
-import okhttp3.RequestBody
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.RequestBody.Companion.asRequestBody
-import okhttp3.RequestBody.Companion.toRequestBody
-import okhttp3.Response
-import okio.BufferedSink
-import okio.ForwardingSink
-import okio.buffer
 import org.intellij.lang.annotations.Language
-import org.jsoup.Jsoup
-import org.jsoup.parser.Parser
+import java.io.ByteArrayInputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.io.InputStream
-import java.net.MalformedURLException
 import java.net.URL
-import java.time.ZonedDateTime
-import java.time.format.DateTimeFormatter
-import java.util.concurrent.TimeUnit
 
 typealias ProgressListener = (finished: Long, total: Long) -> Unit
 
@@ -52,13 +30,11 @@ open class WebDav(
     companion object {
 
         fun fromPath(path: String): WebDav {
-            val id = AnalyzeUrl(path).serverID ?: throw WebDavException("没有serverID")
+            val id = RustAnalyzerBridge.resolveUrl(path, rulePath = "WebDav.fromPath").serverId
+                ?: throw WebDavException("没有serverID")
             val authorization = Authorization(id)
             return WebDav(path, authorization)
         }
-
-        @SuppressLint("DateTimeFormatter")
-        private val dateTimeFormatter = DateTimeFormatter.RFC_1123_DATE_TIME
 
         // 指定返回哪些属性
         @Language("xml")
@@ -93,27 +69,7 @@ open class WebDav(
         val raw = url.toString()
             .replace("davs://", "https://")
             .replace("dav://", "http://")
-        return@lazy kotlin.runCatching {
-            raw.toHttpUrl().toString()
-        }.getOrNull()
-    }
-    private val webDavClient by lazy {
-        val authInterceptor = Interceptor { chain ->
-            var request = chain.request()
-            if (request.url.host.equals(host, true)) {
-                request = request
-                    .newBuilder()
-                    .header(authorization.name, authorization.data)
-                    .build()
-            }
-            chain.proceed(request)
-        }
-        okHttpClient.newBuilder().run {
-            callTimeout(0, TimeUnit.SECONDS)
-            interceptors().add(0, authInterceptor)
-            addNetworkInterceptor(authInterceptor)
-            build()
-        }
+        return@lazy normalizeHttpUrl(raw)
     }
     private val host: String?
         get() = url.host?.let {
@@ -166,83 +122,38 @@ open class WebDav(
             String.format(DIR, requestProps.toString() + "\n")
         }
         val url = httpUrl ?: return null
-        return webDavClient.newCallResponse {
-            url(url)
-            addHeader("Depth", depth.toString())
-            // 添加RequestBody对象，可以只返回的属性。如果设为null，则会返回全部属性
-            // 注意：尽量手动指定需要返回的属性。若返回全部属性，可能后由于Prop.java里没有该属性名，而崩溃。
-            val requestBody = requestPropsStr.toRequestBody("text/plain".toMediaType())
-            method("PROPFIND", requestBody)
-        }.apply {
+        return rustRequest(
+            method = "PROPFIND",
+            headers = mapOf("Depth" to depth.toString(), "Content-Type" to "text/plain"),
+            body = requestPropsStr.toByteArray(),
+            rulePath = "WebDav.propFind"
+        ).apply {
             checkResult(this)
-        }.body.text()
+        }.body.toString(Charsets.UTF_8)
     }
 
     /**
      * 解析webDav返回的xml
      */
     private fun parseBody(s: String): List<WebDavFile> {
-        val list = ArrayList<WebDavFile>()
-        val document = kotlin.runCatching {
-            Jsoup.parse(s, Parser.xmlParser())
-        }.getOrElse {
-            Jsoup.parse(s)
+        val urlStr = httpUrl ?: return emptyList()
+        return RustAnalyzerBridge.parseWebDavListing(
+            body = s,
+            requestUrl = urlStr,
+            originalPath = url.file,
+            rulePath = "WebDav.parseBody"
+        ).map {
+            WebDavFile(
+                it.url,
+                authorization,
+                displayName = it.displayName,
+                urlName = it.urlName,
+                size = it.size,
+                contentType = it.contentType,
+                resourceType = it.resourceType,
+                lastModify = it.lastModify
+            )
         }
-        val ns = document.findNSPrefix("DAV:")
-        val elements = document.findNS("response", ns)
-        val urlStr = httpUrl ?: return list
-        val baseUrl = NetworkUtils.getBaseUrl(urlStr)
-        for (element in elements) {
-            //依然是优化支持 caddy 自建的 WebDav ，其目录后缀都为“/”, 所以删除“/”的判定，不然无法获取该目录项
-            val href = element.findNS("href", ns)[0].text()
-            val hrefDecode = URLDecoder.decodeForPath(href, Charsets.UTF_8)
-            val fileName = hrefDecode.removeSuffix("/").substringAfterLast("/")
-            val webDavFile: WebDav
-            try {
-                val urlName = hrefDecode.ifEmpty {
-                    url.file.replace("/", "")
-                }
-                val displayName = element
-                    .findNS("displayname", ns)
-                    .firstOrNull()?.text()?.takeIf { it.isNotEmpty() }
-                    ?.let { URLDecoder.decodeForPath(it, Charsets.UTF_8) } ?: fileName
-                val contentType = element
-                    .findNS("getcontenttype", ns)
-                    .firstOrNull()?.text().orEmpty()
-                val resourceType = element
-                    .findNS("resourcetype", ns)
-                    .firstOrNull()?.html()?.trim().orEmpty()
-                val size = kotlin.runCatching {
-                    element.findNS("getcontentlength", ns)
-                        .firstOrNull()?.text()?.toLong() ?: 0
-                }.getOrDefault(0)
-                val lastModify: Long = kotlin.runCatching {
-                    element.findNS("getlastmodified", ns)
-                        .firstOrNull()?.text()?.let {
-                            ZonedDateTime.parse(it, dateTimeFormatter)
-                                .toInstant().toEpochMilli()
-                        }
-                }.getOrNull() ?: 0
-                var fullURL = NetworkUtils.getAbsoluteURL(baseUrl, hrefDecode)
-                if (WebDavFile.isDir(contentType, resourceType) && !fullURL.endsWith("/")) {
-                    fullURL += "/"
-                }
-                webDavFile = WebDavFile(
-                    fullURL,
-                    authorization,
-                    displayName = displayName,
-                    urlName = urlName,
-                    size = size,
-                    contentType = contentType,
-                    resourceType = resourceType,
-                    lastModify = lastModify
-                )
-                list.add(webDavFile)
-            } catch (e: MalformedURLException) {
-                e.printOnDebug()
-            }
-        }
-        return list
     }
 
     /**
@@ -251,12 +162,12 @@ open class WebDav(
     suspend fun exists(): Boolean {
         val url = httpUrl ?: return false
         return kotlin.runCatching {
-            return webDavClient.newCallResponse {
-                url(url)
-                addHeader("Depth", "0")
-                val requestBody = EXISTS.toRequestBody("application/xml".toMediaType())
-                method("PROPFIND", requestBody)
-            }.use { it.isSuccessful }
+            return rustRequest(
+                method = "PROPFIND",
+                headers = mapOf("Depth" to "0", "Content-Type" to "application/xml"),
+                body = EXISTS.toByteArray(),
+                rulePath = "WebDav.exists"
+            ).isSuccessful
         }.onFailure {
             currentCoroutineContext().ensureActive()
         }.getOrDefault(false)
@@ -267,12 +178,12 @@ open class WebDav(
      */
     suspend fun check(): Boolean {
         return kotlin.runCatching {
-            webDavClient.newCallResponse {
-                url(url)
-                addHeader("Depth", "0")
-                val requestBody = EXISTS.toRequestBody("application/xml".toMediaType())
-                method("PROPFIND", requestBody)
-            }.use { it.code != 401 }
+            rustRequest(
+                method = "PROPFIND",
+                headers = mapOf("Depth" to "0", "Content-Type" to "application/xml"),
+                body = EXISTS.toByteArray(),
+                rulePath = "WebDav.check"
+            ).code != 401
         }.onFailure {
             currentCoroutineContext().ensureActive()
         }.getOrDefault(true)
@@ -287,12 +198,8 @@ open class WebDav(
         //防止报错
         return kotlin.runCatching {
             if (!exists()) {
-                webDavClient.newCallResponse {
-                    url(url)
-                    method("MKCOL", null)
-                }.use {
-                    checkResult(it)
-                }
+                rustRequest(method = "MKCOL", rulePath = "WebDav.makeAsDir")
+                    .also { checkResult(it) }
             }
         }.onFailure {
             currentCoroutineContext().ensureActive()
@@ -316,27 +223,21 @@ open class WebDav(
             return
         }
         if (onProgress != null) {
-            val url = httpUrl ?: throw WebDavException("WebDav下载出错\nurl为空")
-            webDavClient.newCallResponse {
-                url(url)
-            }.use { response ->
-                checkResult(response)
-                response.body.use { body ->
-                    val total = body.contentLength()
-                    var finished = 0L
-                    onProgress(finished, total)
-                    body.byteStream().use { input ->
-                        FileOutputStream(file).use { output ->
-                            val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-                            while (true) {
-                                currentCoroutineContext().ensureActive()
-                                val read = input.read(buffer)
-                                if (read == -1) break
-                                output.write(buffer, 0, read)
-                                finished += read
-                                onProgress(finished, total)
-                            }
-                        }
+            val response = rustRequest(method = "GET", rulePath = "WebDav.downloadTo")
+            checkResult(response)
+            val total = response.contentLength()
+            var finished = 0L
+            onProgress(finished, total)
+            ByteArrayInputStream(response.body).use { input ->
+                FileOutputStream(file).use { output ->
+                    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                    while (true) {
+                        currentCoroutineContext().ensureActive()
+                        val read = input.read(buffer)
+                        if (read == -1) break
+                        output.write(buffer, 0, read)
+                        finished += read
+                        onProgress(finished, total)
                     }
                 }
             }
@@ -380,18 +281,19 @@ open class WebDav(
         kotlin.runCatching {
             withContext(IO) {
                 if (!file.exists()) throw WebDavException("文件不存在")
-                // 务必注意RequestBody不要嵌套，不然上传时内容可能会被追加多余的文件信息
-                val requestBody = file.asRequestBody(contentType.toMediaType())
-                val fileBody = onProgress?.let {
-                    ProgressRequestBody(requestBody, it)
-                } ?: requestBody
                 val url = httpUrl ?: throw WebDavException("url不能为空")
-                webDavClient.newCallResponse {
-                    url(url)
-                    put(fileBody)
-                }.use {
+                val bytes = file.readBytes()
+                onProgress?.invoke(0L, bytes.size.toLong())
+                rustRequest(
+                    method = "PUT",
+                    url = url,
+                    headers = mapOf("Content-Type" to contentType),
+                    body = bytes,
+                    rulePath = "WebDav.uploadFile"
+                ).also {
                     checkResult(it)
                 }
+                onProgress?.invoke(bytes.size.toLong(), bytes.size.toLong())
             }
         }.onFailure {
             currentCoroutineContext().ensureActive()
@@ -402,15 +304,16 @@ open class WebDav(
 
     @Throws(WebDavException::class)
     suspend fun upload(byteArray: ByteArray, contentType: String = DEFAULT_CONTENT_TYPE) {
-        // 务必注意RequestBody不要嵌套，不然上传时内容可能会被追加多余的文件信息
         kotlin.runCatching {
             withContext(IO) {
-                val fileBody = byteArray.toRequestBody(contentType.toMediaType())
                 val url = httpUrl ?: throw NoStackTraceException("url不能为空")
-                webDavClient.newCallResponse {
-                    url(url)
-                    put(fileBody)
-                }.use {
+                rustRequest(
+                    method = "PUT",
+                    url = url,
+                    headers = mapOf("Content-Type" to contentType),
+                    body = byteArray,
+                    rulePath = "WebDav.uploadBytes"
+                ).also {
                     checkResult(it)
                 }
             }
@@ -423,15 +326,17 @@ open class WebDav(
 
     @Throws(WebDavException::class)
     suspend fun upload(uri: Uri, contentType: String = DEFAULT_CONTENT_TYPE) {
-        // 务必注意RequestBody不要嵌套，不然上传时内容可能会被追加多余的文件信息
         kotlin.runCatching {
             withContext(IO) {
-                val fileBody = uri.toRequestBody(contentType.toMediaType())
+                val bytes = uri.readBytes(appCtx)
                 val url = httpUrl ?: throw NoStackTraceException("url不能为空")
-                webDavClient.newCallResponse {
-                    url(url)
-                    put(fileBody)
-                }.use {
+                rustRequest(
+                    method = "PUT",
+                    url = url,
+                    headers = mapOf("Content-Type" to contentType),
+                    body = bytes,
+                    rulePath = "WebDav.uploadUri"
+                ).also {
                     checkResult(it)
                 }
             }
@@ -444,13 +349,9 @@ open class WebDav(
 
     @Throws(WebDavException::class)
     suspend fun downloadInputStream(): InputStream {
-        val url = httpUrl ?: throw WebDavException("WebDav下载出错\nurl为空")
-        val byteStream = webDavClient.newCallResponse {
-            url(url)
-        }.apply {
-            checkResult(this)
-        }.body.byteStream()
-        return byteStream
+        val response = rustRequest(method = "GET", rulePath = "WebDav.download")
+        checkResult(response)
+        return ByteArrayInputStream(response.body)
     }
 
     /**
@@ -460,10 +361,7 @@ open class WebDav(
         val url = httpUrl ?: return false
         //防止报错
         return kotlin.runCatching {
-            webDavClient.newCallResponse {
-                url(url)
-                method("DELETE", null)
-            }.use {
+            rustRequest(method = "DELETE", url = url, rulePath = "WebDav.delete").also {
                 checkResult(it)
             }
         }.onFailure {
@@ -475,11 +373,63 @@ open class WebDav(
     /**
      * 检测返回结果是否正确
      */
-    private fun checkResult(response: Response) {
+    private suspend fun rustRequest(
+        method: String,
+        url: String = httpUrl ?: throw WebDavException("WebDav请求出错\nurl为空"),
+        headers: Map<String, String> = emptyMap(),
+        body: ByteArray? = null,
+        rulePath: String
+    ): RustRawFetchResult {
+        val requestHeaders = if (hostMatches(url)) {
+            linkedMapOf(authorization.name to authorization.data).apply {
+                putAll(headers)
+            }
+        } else {
+            headers
+        }
+        return RustRemoteFetch.requestBytes(
+            url = url,
+            method = method,
+            headers = requestHeaders,
+            body = body,
+            rulePath = rulePath
+        ).let {
+            RustRawFetchResult(
+                url = url,
+                code = it.code,
+                message = it.message,
+                headers = it.headers,
+                headersList = it.headersList,
+                contentType = it.contentType,
+                body = it.body
+            )
+        }
+    }
+
+    private fun hostMatches(requestUrl: String): Boolean {
+        return kotlin.runCatching {
+            URL(requestUrl).host.equals(host, true)
+        }.getOrDefault(false)
+    }
+
+    private fun RustRawFetchResult.contentLength(): Long {
+        return headersList
+            .firstOrNull { it.size >= 2 && it[0].equals("Content-Length", ignoreCase = true) }
+            ?.get(1)
+            ?.toLongOrNull()
+            ?: body.size.toLong()
+    }
+
+    private val RustRawFetchResult.isSuccessful: Boolean
+        get() = code in 200..299
+
+    private fun checkResult(response: RustRawFetchResult) {
         if (!response.isSuccessful) {
-            val body = response.body.string()
+            val body = response.body.toString(Charsets.UTF_8)
             if (response.code == 401) {
-                val headers = response.headers("WWW-Authenticate")
+                val headers = response.headersList
+                    .filter { it.size >= 2 && it[0].equals("WWW-Authenticate", ignoreCase = true) }
+                    .map { it[1] }
                 val supportBasicAuth = headers.any {
                     it.startsWith("Basic", ignoreCase = true)
                 }
@@ -488,49 +438,39 @@ open class WebDav(
                 }
             }
 
-            if (response.message.isNotBlank() || body.isBlank()) {
-                throw WebDavException("${url}\n${response.code}:${response.message}")
+            val statusMessage = response.message.takeUnless { it == "OK" }.orEmpty()
+            if (statusMessage.isNotBlank() || body.isBlank()) {
+                throw WebDavException("${response.url}\n${response.code}:$statusMessage")
             }
-            val document = Jsoup.parse(body)
-            val exception = document.getElementsByTag("s:exception").firstOrNull()?.text()
-            val message = document.getElementsByTag("s:message").firstOrNull()?.text()
+            val parsedError = RustAnalyzerBridge.parseWebDavError(body)
+            val exception = parsedError.exception.takeIf { it.isNotBlank() }
+            val serverMessage = parsedError.message.takeIf { it.isNotBlank() }
             if (exception == "ObjectNotFound") {
                 throw ObjectNotFoundException(
-                    message ?: "$path doesn't exist. code:${response.code}"
+                    serverMessage ?: "$path doesn't exist. code:${response.code}"
                 )
             }
-            throw WebDavException(message ?: "未知错误 code:${response.code}")
+            throw WebDavException(serverMessage ?: "未知错误 code:${response.code}")
         }
     }
 
-    private class ProgressRequestBody(
-        private val requestBody: RequestBody,
-        private val onProgress: ProgressListener
-    ) : RequestBody() {
+}
 
-        override fun contentType(): MediaType? {
-            return requestBody.contentType()
-        }
-
-        override fun contentLength(): Long {
-            return requestBody.contentLength()
-        }
-
-        override fun writeTo(sink: BufferedSink) {
-            val total = contentLength()
-            var finished = 0L
-            onProgress(finished, total)
-            val progressSink = object : ForwardingSink(sink) {
-                override fun write(source: okio.Buffer, byteCount: Long) {
-                    super.write(source, byteCount)
-                    finished += byteCount
-                    onProgress(finished, total)
-                }
-            }
-            val bufferedSink = progressSink.buffer()
-            requestBody.writeTo(bufferedSink)
-            bufferedSink.flush()
-        }
+internal fun normalizeHttpUrl(raw: String): String? {
+    return kotlin.runCatching {
+        URL(raw).toURI().toASCIIString()
+    }.getOrElse {
+        kotlin.runCatching {
+            val url = URL(raw)
+            java.net.URI(
+                url.protocol,
+                url.userInfo,
+                url.host,
+                url.port,
+                url.path,
+                url.query,
+                url.ref
+            ).toASCIIString()
+        }.getOrNull()
     }
-
 }

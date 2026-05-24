@@ -15,7 +15,6 @@ import com.shuyu.gsyvideoplayer.video.StandardGSYVideoPlayer
 import com.shuyu.gsyvideoplayer.video.base.GSYBaseVideoPlayer
 import io.legado.app.R
 import io.legado.app.constant.AppConst
-import io.legado.app.constant.AppLog
 import io.legado.app.constant.EventBus
 import io.legado.app.constant.SourceType
 import io.legado.app.data.appDb
@@ -31,6 +30,7 @@ import io.legado.app.data.entities.RssReadRecord
 import io.legado.app.data.entities.RssSource
 import io.legado.app.data.entities.RssStar
 import io.legado.app.exception.ContentEmptyException
+import io.legado.app.exception.NoStackTraceException
 import io.legado.app.help.AppWebDav
 import io.legado.app.help.CacheManager
 import io.legado.app.help.ReadRecordDailyHelper
@@ -44,8 +44,8 @@ import io.legado.app.help.gsyVideo.ExoVideoManager
 import io.legado.app.help.gsyVideo.ExoVideoManager.Companion.FULLSCREEN_ID
 import io.legado.app.help.gsyVideo.FloatingPlayer
 import io.legado.app.help.gsyVideo.VideoPlayer
-import io.legado.app.model.analyzeRule.AnalyzeUrl
 import io.legado.app.model.rss.Rss
+import io.legado.app.model.webBook.RustAnalyzerBridge
 import io.legado.app.model.webBook.WebBook
 import io.legado.app.ui.about.ReadRecordWidgetStore
 import io.legado.app.utils.FileUtils
@@ -154,7 +154,7 @@ object VideoPlay : CoroutineScope by MainScope(){
      * 开始播放
      */
     fun startPlay(player: StandardGSYVideoPlayer) {
-        if (source == null) return
+        val playSource = source ?: return
         danmakuStr = null
         danmakuFile = null
         val player = player.getCurrentPlayer()
@@ -165,27 +165,28 @@ object VideoPlay : CoroutineScope by MainScope(){
                     player.seekOnStart = it
                 }
                 inBookshelf = true
-                val analyzeUrl = AnalyzeUrl(
-                    mUrl,
-                    source = source,
-                    ruleData = book,
-                    chapter = null
+                val request = RustAnalyzerBridge.resolveMediaRequest(
+                    url = mUrl,
+                    source = playSource,
+                    rulePath = "VideoPlay.singleUrl"
                 )
                 withContext(Main) {
-                    player.mapHeadData = analyzeUrl.headerMap
-                    val url = analyzeUrl.url
+                    player.mapHeadData = request.headers.toMutableMap()
+                    val url = request.url
                     player.setUp(url, false, File(appCtx.externalCache, "exoplayer"), videoTitle)
                     if (autoPlay) {
                         player.startPlayLogic()
                     }
                 }
             }.onError {
-                AppLog.put("加载视频链接失败", it, true)
+                throw NoStackTraceException(
+                    "VideoPlay Rust single URL media resolution failed: ${it.localizedMessage ?: it}"
+                )
             }
             return
         }
         durChapterPos.takeIf { it > 0 }?.toLong()?.let { player.seekOnStart = it }
-        (source as? RssSource)?.let { s ->
+        (playSource as? RssSource)?.let { s ->
             val rssArticle = rssStar?.toRssArticle() ?: rssRecord?.toRssArticle()
             if (rssArticle == null) {
                 appCtx.toastOnUi("未找到订阅")
@@ -196,15 +197,16 @@ object VideoPlay : CoroutineScope by MainScope(){
                 Coroutine.async(loadScope, IO) {
                     val mUrl = rssArticle.link
                     videoUrl = mUrl
-                    val analyzeUrl = AnalyzeUrl(
-                        mUrl,
-                        source = source,
-                        ruleData = rssArticle
+                    val request = RustAnalyzerBridge.resolveMediaRequest(
+                        url = mUrl,
+                        source = playSource,
+                        baseUrl = rssArticle.link,
+                        rulePath = "VideoPlay.rssLink"
                     )
                     withContext(Main) {
-                        player.mapHeadData = analyzeUrl.headerMap
+                        player.mapHeadData = request.headers.toMutableMap()
                         player.setUp(
-                            analyzeUrl.url,
+                            request.url,
                             false,
                             File(appCtx.externalCache, "exoplayer"),
                             rssArticle.title
@@ -214,7 +216,9 @@ object VideoPlay : CoroutineScope by MainScope(){
                         }
                     }
                 }.onError {
-                    AppLog.put("加载订阅源视频链接失败", it, true)
+                    throw NoStackTraceException(
+                        "VideoPlay Rust RSS link media resolution failed: ${it.localizedMessage ?: it}"
+                    )
                 }
             } else {
                 Rss.getContent(loadScope, rssArticle, ruleContent, s)
@@ -231,21 +235,24 @@ object VideoPlay : CoroutineScope by MainScope(){
                             NetworkUtils.getAbsoluteURL(rssArticle.link, content)
                         }
                         videoUrl = mUrl
-                        val analyzeUrl = AnalyzeUrl(
-                            mUrl,
-                            source = source,
-                            ruleData = rssArticle
+                        val request = RustAnalyzerBridge.resolveMediaRequest(
+                            url = mUrl,
+                            source = playSource,
+                            baseUrl = rssArticle.link,
+                            rulePath = "VideoPlay.rssContent"
                         )
-                        val playUrl = analyzeUrl.url
+                        val playUrl = request.url
                         withContext(Main) {
-                            player.mapHeadData = analyzeUrl.headerMap
+                            player.mapHeadData = request.headers.toMutableMap()
                             player.setUp(playUrl, false, File(appCtx.externalCache, "exoplayer"), rssArticle.title)
                             if (autoPlay) {
                                 player.startPlayLogic()
                             }
                         }
                     }.onError {
-                        AppLog.put("加载订阅源为链接的正文失败", it, true)
+                        throw NoStackTraceException(
+                            "VideoPlay Rust RSS content/media URL failed: ${it.localizedMessage ?: it}"
+                        )
                     }
             }
             return
@@ -306,29 +313,29 @@ object VideoPlay : CoroutineScope by MainScope(){
                     content
                 }
                 videoUrl = mUrl
-                val analyzeUrl = AnalyzeUrl(
-                    mUrl,
-                    source = source,
-                    ruleData = book,
-                    chapter = chapter
+                val request = RustAnalyzerBridge.resolveMediaRequest(
+                    url = mUrl,
+                    source = chapterSource,
+                    baseUrl = chapter.baseUrl,
+                    rulePath = "VideoPlay.chapterContent"
                 )
                 when (val danmaku = chapter.getDanmaku()) {
                     is String -> danmakuStr = danmaku
                     is File -> danmakuFile = danmaku
                 }
-                val playUrl = analyzeUrl.url
+                val playUrl = request.url
                 if (chapter.resourceUrl != playUrl) {
                     chapter.resourceUrl = playUrl
                     appDb.bookChapterDao.update(chapter)
                 }
                 chapterLinkCache[chapterCacheKey] = CachedPlayLink(
                     playUrl = playUrl,
-                    headers = analyzeUrl.headerMap.toMap(),
+                    headers = request.headers,
                     mediaUrl = mUrl,
                     createdAt = System.currentTimeMillis()
                 )
                 withContext(Main) {
-                    player.mapHeadData = analyzeUrl.headerMap
+                    player.mapHeadData = request.headers.toMutableMap()
                     player.setUp(playUrl, false, File(appCtx.externalCache, "exoplayer"), chapter.title)
                     if (autoPlay) {
                         player.startPlayLogic()
@@ -336,7 +343,10 @@ object VideoPlay : CoroutineScope by MainScope(){
                 }
                 preloadNextEpisode(chapterSource, book)
             }.onError {
-                AppLog.put("获取资源链接出错\n$it", it, true)
+                throw NoStackTraceException(
+                    "VideoPlay Rust chapter content/media URL failed for ${book.name}-${chapter.title}: " +
+                        (it.localizedMessage ?: it.toString())
+                )
             }
         isLoading = false
     }
@@ -404,19 +414,23 @@ object VideoPlay : CoroutineScope by MainScope(){
                     } else {
                         content
                     }
-                    val analyzeUrl = AnalyzeUrl(
-                        mUrl,
+                    val request = RustAnalyzerBridge.resolveMediaRequest(
+                        url = mUrl,
                         source = source,
-                        ruleData = book,
-                        chapter = nextChapter
+                        baseUrl = nextChapter.baseUrl,
+                        rulePath = "VideoPlay.preloadNextEpisode"
                     )
                     chapterLinkCache[nextKey] = CachedPlayLink(
-                        playUrl = analyzeUrl.url,
-                        headers = analyzeUrl.headerMap.toMap(),
+                        playUrl = request.url,
+                        headers = request.headers,
                         mediaUrl = mUrl,
                         createdAt = System.currentTimeMillis()
                     )
-                } catch (_: Throwable) {
+                } catch (e: Throwable) {
+                    throw NoStackTraceException(
+                        "VideoPlay Rust preload content/media URL failed for ${book.name}-${nextChapter.title}: " +
+                            (e.localizedMessage ?: e.toString())
+                    )
                 } finally {
                     preloadingKeys.remove(nextKey)
                 }
@@ -702,8 +716,6 @@ object VideoPlay : CoroutineScope by MainScope(){
         val book = book ?: return
         Coroutine.async {
             AppWebDav.getBookProgress(book)
-        }.onError {
-            AppLog.put("拉取视频进度失败", it)
         }.onSuccess { progress ->
             when (progress?.compareWith(book)) {
                 null,

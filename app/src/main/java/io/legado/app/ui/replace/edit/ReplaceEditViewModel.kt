@@ -42,13 +42,20 @@ class ReplaceEditViewModel(application: Application) : BaseViewModel(application
             if (text.isNullOrBlank()) {
                 throw NoStackTraceException("剪贴板为空")
             }
-            GSON.fromJsonObject<ReplaceRule>(text).getOrNull()
-                ?: throw NoStackTraceException("格式不对")
+            GSON.fromJsonObject<ReplaceRule>(text).getOrElse {
+                throw NoStackTraceException(
+                    "ReplaceEdit paste rule JSON is invalid for Rust analyzer handoff: " +
+                        (it.localizedMessage ?: it::class.java.name)
+                )
+            }
         }.onSuccess {
             success.invoke(it)
         }.onError {
             context.toastOnUi(it.localizedMessage ?: "Error")
-            it.printOnDebug()
+            throw NoStackTraceException(
+                "ReplaceEdit paste rule failed: " +
+                    (it.localizedMessage ?: it::class.java.name)
+            )
         }
     }
 

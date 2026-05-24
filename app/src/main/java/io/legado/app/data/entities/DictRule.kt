@@ -3,10 +3,7 @@ package io.legado.app.data.entities
 import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.PrimaryKey
-import io.legado.app.model.analyzeRule.AnalyzeRule
-import io.legado.app.model.analyzeRule.AnalyzeRule.Companion.setCoroutineContext
-import io.legado.app.model.analyzeRule.AnalyzeUrl
-import kotlinx.coroutines.currentCoroutineContext
+import io.legado.app.model.webBook.RustAnalyzerBridge
 
 /**
  * 字典规则
@@ -38,20 +35,16 @@ data class DictRule(
      * 搜索字典
      */
     suspend fun search(word: String): String {
-        val analyzeUrl = AnalyzeUrl(urlRule, key = word, coroutineContext = currentCoroutineContext())
-        val body = analyzeUrl.getStrResponseAwait().body
-        if (showRule.isBlank()) {
-            return body!!
-        }
-        val analyzeRule = AnalyzeRule().setCoroutineContext(currentCoroutineContext())
-        analyzeRule.setRuleName(name)
-        return analyzeRule.getString(showRule, mContent = body)
+        return RustAnalyzerBridge.dictSearch(name, urlRule, showRule, word)
     }
 
     suspend fun buttonClick(name: String, click: String) {
-        val analyzeRule = AnalyzeRule().setCoroutineContext(currentCoroutineContext())
-        analyzeRule.setRuleName(this.name)
-        analyzeRule.evalJS(click , name)
+        RustAnalyzerBridge.evalJsRaw(
+            script = click,
+            result = name,
+            baseUrl = "legado://dict/${this.name.ifBlank { "anonymous" }}",
+            rulePath = "DictRule.${this.name}.buttonClick"
+        )
     }
 
 }

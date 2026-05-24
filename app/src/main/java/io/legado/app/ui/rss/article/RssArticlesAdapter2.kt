@@ -14,7 +14,7 @@ import io.legado.app.base.adapter.ItemViewHolder
 import io.legado.app.data.entities.RssArticle
 import io.legado.app.databinding.ItemRssArticle2Binding
 import io.legado.app.help.glide.ImageLoader
-import io.legado.app.help.glide.OkHttpModelLoader
+import io.legado.app.help.glide.RustImageModelLoader
 import io.legado.app.utils.getCompatColor
 import io.legado.app.utils.gone
 import io.legado.app.utils.visible
@@ -63,7 +63,7 @@ class RssArticlesAdapter2(context: Context, callBack: CallBack) :
                 imageView.gone()
             } else {
                 val options =
-                    RequestOptions().set(OkHttpModelLoader.sourceOriginOption, item.origin)
+                    RequestOptions().set(RustImageModelLoader.sourceOriginOption, item.origin)
                 ImageLoader.load(context, item.image).apply(options).apply {
                     if (callBack.isGridLayout) {
                         placeholder(R.drawable.transparent_placeholder)

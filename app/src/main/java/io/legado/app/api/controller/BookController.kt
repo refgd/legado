@@ -227,12 +227,15 @@ object BookController {
      */
     suspend fun saveBook(postData: String?): ReturnData {
         val returnData = ReturnData()
-        GSON.fromJsonObject<Book>(postData).getOrNull()?.let { book ->
-            AppWebDav.uploadBookProgress(book)
-            book.save()
-            return returnData.setData("")
+        postData ?: return returnData.setErrorMsg("数据不能为空")
+        val book = GSON.fromJsonObject<Book>(postData).getOrElse {
+            return returnData.setErrorMsg(
+                "BookController.saveBook JSON is invalid for Rust analyzer handoff: ${it.localizedMessage}"
+            )
         }
-        return returnData.setErrorMsg("格式不对")
+        AppWebDav.uploadBookProgress(book)
+        book.save()
+        return returnData.setData("")
     }
 
     /**
@@ -240,11 +243,14 @@ object BookController {
      */
     fun deleteBook(postData: String?): ReturnData {
         val returnData = ReturnData()
-        GSON.fromJsonObject<Book>(postData).getOrNull()?.let { book ->
-            book.delete()
-            return returnData.setData("")
+        postData ?: return returnData.setErrorMsg("数据不能为空")
+        val book = GSON.fromJsonObject<Book>(postData).getOrElse {
+            return returnData.setErrorMsg(
+                "BookController.deleteBook JSON is invalid for Rust analyzer handoff: ${it.localizedMessage}"
+            )
         }
-        return returnData.setErrorMsg("格式不对")
+        book.delete()
+        return returnData.setData("")
     }
 
     /**

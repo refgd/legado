@@ -26,8 +26,6 @@ import io.legado.app.databinding.ItemBgImageBinding
 import io.legado.app.help.DefaultData
 import io.legado.app.help.book.isImage
 import io.legado.app.help.config.ReadBookConfig
-import io.legado.app.help.http.newCallResponseBody
-import io.legado.app.help.http.okHttpClient
 import io.legado.app.lib.dialogs.SelectItem
 import io.legado.app.lib.dialogs.alert
 import io.legado.app.lib.dialogs.selector
@@ -63,6 +61,7 @@ import io.legado.app.utils.postEvent
 import io.legado.app.utils.printOnDebug
 import io.legado.app.utils.readBytes
 import io.legado.app.utils.readUri
+import io.legado.app.utils.RustRemoteFetch
 import io.legado.app.utils.stackTraceStr
 import io.legado.app.utils.toastOnUi
 import io.legado.app.utils.viewbindingdelegate.viewBinding
@@ -70,9 +69,7 @@ import splitties.init.appCtx
 import java.io.File
 import java.io.FileOutputStream
 import androidx.lifecycle.lifecycleScope
-import io.legado.app.help.http.addHeaders
-import io.legado.app.help.http.newCallResponse
-import io.legado.app.model.analyzeRule.AnalyzeUrl
+import io.legado.app.model.webBook.RustAnalyzerBridge
 import io.legado.app.utils.setSelectionSafely
 import kotlinx.coroutines.launch
 
@@ -415,11 +412,7 @@ class BgTextConfigDialog : BaseDialogFragment(R.layout.dialog_read_bg_text) {
 
     private fun importNetConfig(url: String) {
         execute {
-            okHttpClient.newCallResponseBody {
-                url(url)
-            }.bytes().let {
-                importConfig(it)
-            }
+            importConfig(RustRemoteFetch.bytes(url, "BgTextConfigDialog.importNetConfig").body)
         }.onError {
             longToast(it.stackTraceStr)
         }
@@ -452,14 +445,17 @@ class BgTextConfigDialog : BaseDialogFragment(R.layout.dialog_read_bg_text) {
             lifecycleScope.launch {
                 kotlin.runCatching {
                     appCtx.toastOnUi("下载图片中...")
-                    val analyzeUrl = AnalyzeUrl(uri.toString())
-                    val url = analyzeUrl.urlNoQuery
+                    val res = RustAnalyzerBridge.fetchRawUrl(
+                        uri.toString(),
+                        "BgTextConfigDialog.backgroundImage"
+                    )
+                    val url = res.url
                     var file = requireContext().externalFiles
-                    val res = okHttpClient.newCallResponse(0) {
-                        addHeaders(analyzeUrl.headerMap)
-                        url(url)
-                    }
-                    val contentType = res.header("Content-Type") ?: "image/jpeg"
+                    val contentType = res.contentType
+                        ?: res.headers.entries.firstOrNull {
+                            it.key.equals("Content-Type", ignoreCase = true)
+                        }?.value
+                        ?: "image/jpeg"
                     val imageType = when {
                         contentType.contains("png", ignoreCase = true) -> "png"
                         contentType.contains("gif", ignoreCase = true) -> "gif"
@@ -473,10 +469,8 @@ class BgTextConfigDialog : BaseDialogFragment(R.layout.dialog_read_bg_text) {
                     }
                     val fileName = MD5Utils.md5Encode(url) + suffix
                     file = FileUtils.createFileIfNotExist(file, "bg", fileName)
-                    res.body.byteStream().use { inputStream ->
-                        FileOutputStream(file).use { outputStream ->
-                            inputStream.copyTo(outputStream)
-                        }
+                    FileOutputStream(file).use { outputStream ->
+                        outputStream.write(res.body)
                     }
                     ReadBookConfig.durConfig.setCurBg(2, fileName)
                     postEvent(EventBus.UP_CONFIG, arrayListOf(1))

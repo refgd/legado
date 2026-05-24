@@ -22,15 +22,12 @@ import io.legado.app.databinding.DialogImageBlurringBinding
 import io.legado.app.help.LauncherIconHelp
 import io.legado.app.help.config.AppConfig
 import io.legado.app.help.config.ThemeConfig
-import io.legado.app.help.http.addHeaders
-import io.legado.app.help.http.newCallResponse
-import io.legado.app.help.http.okHttpClient
 import io.legado.app.lib.dialogs.alert
 import io.legado.app.lib.dialogs.selector
 import io.legado.app.lib.prefs.ColorPreference
 import io.legado.app.lib.prefs.fragment.PreferenceFragment
 import io.legado.app.lib.theme.primaryColor
-import io.legado.app.model.analyzeRule.AnalyzeUrl
+import io.legado.app.model.webBook.RustAnalyzerBridge
 import io.legado.app.ui.file.HandleFileContract
 import io.legado.app.ui.image.ImageCropContract
 import io.legado.app.ui.widget.seekbar.SeekBarChangeListener
@@ -445,14 +442,17 @@ class ThemeConfigFragment : PreferenceFragment(),
             lifecycleScope.launch {
                 kotlin.runCatching {
                     appCtx.toastOnUi("下载背景图片中...")
-                    val analyzeUrl = AnalyzeUrl(uri.toString())
-                    val url = analyzeUrl.urlNoQuery
+                    val res = RustAnalyzerBridge.fetchRawUrl(
+                        uri.toString(),
+                        "ThemeConfigFragment.backgroundImage"
+                    )
+                    val url = res.url
                     var file = requireContext().externalFiles
-                    val res = okHttpClient.newCallResponse(0) {
-                        addHeaders(analyzeUrl.headerMap)
-                        url(url)
-                    }
-                    val contentType = res.header("Content-Type") ?: "image/jpeg"
+                    val contentType = res.contentType
+                        ?: res.headers.entries.firstOrNull {
+                            it.key.equals("Content-Type", ignoreCase = true)
+                        }?.value
+                        ?: "image/jpeg"
                     val imageType = when {
                         contentType.contains("png", ignoreCase = true) -> "png"
                         contentType.contains("gif", ignoreCase = true) -> "gif"
@@ -466,10 +466,8 @@ class ThemeConfigFragment : PreferenceFragment(),
                     }
                     val fileName = MD5Utils.md5Encode(url) + suffix
                     file = FileUtils.createFileIfNotExist(file, preferenceKey, fileName)
-                    res.body.byteStream().use { inputStream ->
-                        FileOutputStream(file).use { outputStream ->
-                            inputStream.copyTo(outputStream)
-                        }
+                    FileOutputStream(file).use { outputStream ->
+                        outputStream.write(res.body)
                     }
                     putPrefString(preferenceKey, file.absolutePath)
                     if (isAdded && context != null) {

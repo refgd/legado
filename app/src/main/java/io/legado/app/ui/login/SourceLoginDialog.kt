@@ -13,14 +13,16 @@ import android.view.WindowManager
 import androidx.core.view.setPadding
 import androidx.fragment.app.activityViewModels
 import androidx.lifecycle.lifecycleScope
-import com.script.rhino.runScriptWithContext
 import io.legado.app.R
 import io.legado.app.base.BaseDialogFragment
 import io.legado.app.constant.AppLog
 import io.legado.app.data.entities.BaseSource
+import io.legado.app.data.entities.Book
+import io.legado.app.data.entities.BookChapter
 import io.legado.app.data.entities.rule.RowUi
 import io.legado.app.databinding.DialogLoginBinding
 import io.legado.app.databinding.ItemSourceEditBinding
+import io.legado.app.exception.NoStackTraceException
 import io.legado.app.lib.dialogs.alert
 import io.legado.app.lib.theme.applyUiToolbarTypeface
 import io.legado.app.lib.theme.primaryColor
@@ -33,7 +35,6 @@ import io.legado.app.utils.dpToPx
 import io.legado.app.utils.fromJsonArray
 import io.legado.app.utils.isAbsUrl
 import io.legado.app.utils.openUrl
-import io.legado.app.utils.printOnDebug
 import io.legado.app.utils.sendToClip
 import io.legado.app.utils.setLayoutWrapMaxHeight
 import io.legado.app.utils.showDialogFragment
@@ -228,24 +229,25 @@ class SourceLoginDialog : BaseDialogFragment(R.layout.dialog_login, true),
         val result = rowUis?.let {
             getLoginData(it)
         } ?: viewModel.loginInfo.toMutableMap()
-        return try {
-            runScriptWithContext {
-                source.evalJS("$loginJS\n$jsStr") {
-                    put("result", result)
-                    put("book", viewModel.book)
-                    put("chapter", viewModel.chapter)
-                }.toString()
-            }
-        } catch (e: Exception) {
-            AppLog.put(source.getTag() + " loginUi err:" + (e.localizedMessage ?: e.toString()), e)
-            null
-        }
+        return evalLoginUiJsByRust(
+            source = source,
+            loginJs = loginJS,
+            jsStr = jsStr,
+            result = result,
+            book = viewModel.book,
+            chapter = viewModel.chapter
+        )
     }
 
     fun loginUi(json: String?): List<RowUi>? {
-        return GSON.fromJsonArray<RowUi>(json).onFailure {
-            AppLog.put("loginUi json parse err:" + it.localizedMessage, it)
-        }.getOrNull()
+        if (json.isNullOrBlank()) {
+            return null
+        }
+        return GSON.fromJsonArray<RowUi>(json).getOrElse {
+            throw NoStackTraceException(
+                "SourceLoginDialog loginUi must return a JSON array: ${json.take(300)}"
+            )
+        }
     }
 
     @SuppressLint("SetTextI18n")
@@ -457,18 +459,21 @@ class SourceLoginDialog : BaseDialogFragment(R.layout.dialog_login, true),
                 val buttonFunctionJS = action
                 val loginJS = loginUrl ?: return@launch
                 kotlin.runCatching {
-                    runScriptWithContext {
-                        source.evalJS("$loginJS\n$buttonFunctionJS") {
-                            put("java", sourceLoginJsExtensions)
-                            put("result", getLoginData(rowUis))
-                            put("book", viewModel.book)
-                            put("chapter", viewModel.chapter)
-                            put("isLongClick", isLongClick)
-                        }
-                    }
+                    evalLoginButtonClickByRust(
+                        source = source,
+                        loginJs = loginJS,
+                        buttonFunctionJs = buttonFunctionJS,
+                        java = sourceLoginJsExtensions,
+                        result = getLoginData(rowUis),
+                        book = viewModel.book,
+                        chapter = viewModel.chapter,
+                        isLongClick = isLongClick
+                    )
+                }.onSuccess {
+                    RustPlatformAction.handle(it, sourceLoginJsExtensions)
                 }.onFailure { e ->
                     ensureActive()
-                    AppLog.put("LoginUI Button $name JavaScript error", e)
+                    throw NoStackTraceException("LoginUI Button $name Rust JavaScript failed: ${e.localizedMessage ?: e}")
                 }
             }
         }
@@ -501,23 +506,22 @@ class SourceLoginDialog : BaseDialogFragment(R.layout.dialog_login, true),
                 try {
                     val buttonFunctionJS = "if (typeof login=='function'){ login.apply(this); } else { throw('Function login not implements!!!') }"
                     val loginJS = loginUrl ?: return@launch
-                    runScriptWithContext {
-                        source.evalJS("$loginJS\n$buttonFunctionJS") {
-                            put("java", sourceLoginJsExtensions)
-                            put("result", loginData)
-                            put("book", viewModel.book)
-                            put("chapter", viewModel.chapter)
-                            put("isLongClick", false)
-                        }
-                    }
+                    evalLoginButtonClickByRust(
+                        source = source,
+                        loginJs = loginJS,
+                        buttonFunctionJs = buttonFunctionJS,
+                        java = sourceLoginJsExtensions,
+                        result = loginData,
+                        book = viewModel.book,
+                        chapter = viewModel.chapter,
+                        isLongClick = false
+                    ).also { RustPlatformAction.handle(it, sourceLoginJsExtensions) }
                     context?.toastOnUi(R.string.success)
                     withContext(Main) {
                         dismiss()
                     }
                 } catch (e: Exception) {
-                    AppLog.put("登录出错\n${e.localizedMessage}", e)
-                    context?.toastOnUi("登录出错\n${e.localizedMessage}")
-                    e.printOnDebug()
+                    throw NoStackTraceException("SourceLoginDialog login Rust JavaScript failed: ${e.localizedMessage ?: e}")
                 }
             }
         }
@@ -540,4 +544,38 @@ class SourceLoginDialog : BaseDialogFragment(R.layout.dialog_login, true),
         activity?.finish()
     }
 
+}
+
+fun evalLoginUiJsByRust(
+    source: BaseSource,
+    loginJs: String,
+    jsStr: String,
+    result: Map<String, String>,
+    book: Book?,
+    chapter: BookChapter?
+): String {
+    return source.evalJS("$loginJs\n$jsStr") {
+        put("result", result)
+        put("book", book)
+        put("chapter", chapter)
+    }.toString()
+}
+
+fun evalLoginButtonClickByRust(
+    source: BaseSource,
+    loginJs: String,
+    buttonFunctionJs: String,
+    java: SourceLoginJsExtensions,
+    result: Map<String, String>,
+    book: Book?,
+    chapter: BookChapter?,
+    isLongClick: Boolean
+): Any? {
+    return source.evalJS("$loginJs\n$buttonFunctionJs") {
+        put("java", java)
+        put("result", result)
+        put("book", book)
+        put("chapter", chapter)
+        put("isLongClick", isLongClick)
+    }
 }

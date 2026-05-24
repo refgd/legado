@@ -24,14 +24,26 @@ object ReplaceAnalyzer {
 
     fun jsonToReplaceRule(json: String): Result<ReplaceRule> {
         return runCatching {
-            val replaceRule: ReplaceRule? =
-                GSON.fromJsonObject<ReplaceRule>(json.trim()).getOrNull()
-            if (replaceRule == null || replaceRule.pattern.isEmpty()) {
+            val trimmed = json.trim()
+            var parseError: Throwable? = null
+            val parsedRule = GSON.fromJsonObject<ReplaceRule>(trimmed).fold(
+                onSuccess = { it },
+                onFailure = {
+                    parseError = it
+                    null
+                }
+            )
+            if (parsedRule == null || parsedRule.pattern.isEmpty()) {
                 val jsonItem = jsonPath.parse(json.trim())
                 val rule = ReplaceRule()
                 rule.id = jsonItem.readLong("$.id") ?: System.currentTimeMillis()
                 rule.pattern = jsonItem.readString("$.regex") ?: ""
-                if (rule.pattern.isEmpty()) throw NoStackTraceException("格式不对")
+                if (rule.pattern.isEmpty()) {
+                    throw NoStackTraceException(
+                        "ReplaceAnalyzer rule JSON is invalid for Rust analyzer handoff: missing pattern or legacy regex" +
+                                (parseError?.localizedMessage?.let { "; parse error: $it" } ?: "")
+                    )
+                }
                 rule.name = jsonItem.readString("$.replaceSummary") ?: ""
                 rule.replacement = jsonItem.readString("$.replacement") ?: ""
                 rule.isRegex = jsonItem.readBool("$.isRegex") == true
@@ -40,7 +52,7 @@ object ReplaceAnalyzer {
                 rule.order = jsonItem.readInt("$.serialNumber") ?: 0
                 return@runCatching rule
             }
-            return@runCatching replaceRule
+            return@runCatching parsedRule
         }
     }
 

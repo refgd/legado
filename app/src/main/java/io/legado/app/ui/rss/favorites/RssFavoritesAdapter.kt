@@ -13,7 +13,7 @@ import io.legado.app.base.adapter.RecyclerAdapter
 import io.legado.app.data.entities.RssStar
 import io.legado.app.databinding.ItemRssArticleBinding
 import io.legado.app.help.glide.ImageLoader
-import io.legado.app.help.glide.OkHttpModelLoader
+import io.legado.app.help.glide.RustImageModelLoader
 import io.legado.app.utils.gone
 import io.legado.app.utils.visible
 
@@ -38,7 +38,7 @@ class RssFavoritesAdapter(context: Context, val callBack: CallBack) :
                 imageView.gone()
             } else {
                 val options =
-                    RequestOptions().set(OkHttpModelLoader.sourceOriginOption, item.origin)
+                    RequestOptions().set(RustImageModelLoader.sourceOriginOption, item.origin)
                 ImageLoader.load(context, item.image)
                     .apply(options)
                     .addListener(object : RequestListener<Drawable> {

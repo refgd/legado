@@ -3,11 +3,8 @@ package io.legado.app.ui.rss.read
 import android.app.Application
 import android.content.Intent
 import android.net.Uri
-import android.util.Base64
-import android.webkit.URLUtil
 import androidx.lifecycle.MutableLiveData
 import androidx.lifecycle.viewModelScope
-import com.script.rhino.runScriptWithContext
 import io.legado.app.base.BaseViewModel
 import io.legado.app.constant.AppConst
 import io.legado.app.constant.AppConst.imagePathKey
@@ -17,16 +14,15 @@ import io.legado.app.data.entities.RssSource
 import io.legado.app.data.entities.RssStar
 import io.legado.app.exception.NoStackTraceException
 import io.legado.app.help.TTS
-import io.legado.app.help.http.newCallResponseBody
-import io.legado.app.help.http.okHttpClient
+import io.legado.app.help.config.AppConfig
 import io.legado.app.help.webView.WebJsExtensions.Companion.JS_URL
-import io.legado.app.model.analyzeRule.AnalyzeUrl
+import io.legado.app.model.webBook.RustAnalyzerBridge
 import io.legado.app.model.rss.Rss
 import io.legado.app.utils.ACache
+import io.legado.app.utils.WebImageBytes
 import io.legado.app.utils.toastOnUi
 import io.legado.app.utils.writeBytes
 import kotlinx.coroutines.Dispatchers.IO
-import kotlinx.coroutines.currentCoroutineContext
 import splitties.init.appCtx
 import java.util.Date
 
@@ -36,7 +32,7 @@ class ReadRssViewModel(application: Application) : BaseViewModel(application) {
     var rssArticle: RssArticle? = null
     var tts: TTS? = null
     val contentLiveData = MutableLiveData<String>()
-    val urlLiveData = MutableLiveData<AnalyzeUrl>()
+    val urlLiveData = MutableLiveData<RssUrlState>()
     val htmlLiveData = MutableLiveData<String>()
     var rssStar: RssStar? = null
     val upTtsMenuData = MutableLiveData<Boolean>()
@@ -56,9 +52,7 @@ class ReadRssViewModel(application: Application) : BaseViewModel(application) {
             rssSource = appDb.rssSourceDao.getByKey(origin)?.also {
                 hasPreloadJs = !it.preloadJs.isNullOrBlank()
             }
-            headerMap = runScriptWithContext {
-                rssSource?.getHeaderMap() ?: emptyMap()
-            }
+            headerMap = rssSource?.getHeaderMap() ?: emptyMap()
             if (link != null) {
                 rssStar = appDb.rssStarDao.get(origin, link)
                 val sort = intent.getStringExtra("sort")
@@ -104,14 +98,22 @@ class ReadRssViewModel(application: Application) : BaseViewModel(application) {
     }
 
     private suspend fun loadUrl(url: String?, baseUrl: String) {
-        val analyzeUrl = AnalyzeUrl(
-            mUrl = url ?: baseUrl,
-            baseUrl = baseUrl,
+        val resolved = RustAnalyzerBridge.resolveUrl(
+            url = url ?: baseUrl,
             source = rssSource,
-            coroutineContext = currentCoroutineContext(),
-            hasLoginHeader = false
+            baseUrl = baseUrl,
+            rulePath = "ReadRssViewModel.loadUrl"
         )
-        urlLiveData.postValue(analyzeUrl)
+        val headers = linkedMapOf<String, String>()
+        headers.putAll(headerMap)
+        resolved.headers.forEach { pair ->
+            val name = pair.getOrNull(0)
+            val value = pair.getOrNull(1)
+            if (!name.isNullOrBlank() && value != null) {
+                headers[name] = value
+            }
+        }
+        urlLiveData.postValue(RssUrlState(resolved.url, headers))
     }
 
     private fun loadContent(rssArticle: RssArticle, ruleContent: String) {
@@ -210,13 +212,7 @@ class ReadRssViewModel(application: Application) : BaseViewModel(application) {
     }
 
     private suspend fun webData2bitmap(data: String): ByteArray? {
-        return if (URLUtil.isValidUrl(data)) {
-            okHttpClient.newCallResponseBody {
-                url(data)
-            }.bytes()
-        } else {
-            Base64.decode(data.split(",").toTypedArray()[1], Base64.DEFAULT)
-        }
+        return WebImageBytes.fetch(data, rssSource, "ReadRssViewModel.saveImage")
     }
 
     fun clHtml(content: String, style: String?): String {
@@ -304,4 +300,15 @@ class ReadRssViewModel(application: Application) : BaseViewModel(application) {
         tts?.clearTts()
     }
 
+}
+
+data class RssUrlState(
+    val url: String,
+    val headerMap: Map<String, String>
+) {
+    fun getUserAgent(): String {
+        return headerMap.entries.firstOrNull {
+            it.key.equals(AppConst.UA_NAME, ignoreCase = true)
+        }?.value ?: AppConfig.userAgent
+    }
 }

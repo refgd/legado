@@ -18,7 +18,7 @@ import io.legado.app.R
 import io.legado.app.base.BaseDialogFragment
 import io.legado.app.databinding.DialogVerificationCodeViewBinding
 import io.legado.app.help.glide.ImageLoader
-import io.legado.app.help.glide.OkHttpModelLoader
+import io.legado.app.help.glide.RustImageModelLoader
 import io.legado.app.help.source.SourceVerificationHelp
 import io.legado.app.lib.dialogs.alert
 import io.legado.app.lib.theme.primaryColor
@@ -87,7 +87,7 @@ class VerificationCodeDialog() : BaseDialogFragment(R.layout.dialog_verification
         ImageProvider.remove(url)
         ImageLoader.loadBitmap(requireContext(), url).apply {
             sourceUrl?.let {
-                apply(RequestOptions().set(OkHttpModelLoader.sourceOriginOption, it))
+                apply(RequestOptions().set(RustImageModelLoader.sourceOriginOption, it))
             }
         }.error(R.drawable.image_loading_error)
             .diskCacheStrategy(DiskCacheStrategy.NONE)

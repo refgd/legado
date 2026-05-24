@@ -15,14 +15,11 @@ import com.bumptech.glide.Glide
 import com.bumptech.glide.load.resource.gif.GifDrawable
 import com.bumptech.glide.request.target.CustomTarget
 import com.bumptech.glide.request.transition.Transition
-import io.legado.app.model.analyzeRule.AnalyzeUrl.Companion.paramPattern
-import io.legado.app.utils.GSON
-import io.legado.app.utils.fromJsonObject
 import java.lang.ref.WeakReference
 import io.legado.app.utils.lifecycle
 import java.io.ByteArrayInputStream
-import kotlin.io.encoding.Base64
 import io.legado.app.utils.SvgUtils
+import io.legado.app.utils.UrlOptions
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.text.dropLast
 import kotlin.text.endsWith
@@ -31,8 +28,9 @@ import androidx.core.graphics.drawable.toDrawable
 import android.graphics.Color
 import com.bumptech.glide.request.RequestOptions
 import io.legado.app.data.appDb
-import io.legado.app.help.glide.OkHttpModelLoader
-import io.legado.app.model.analyzeRule.AnalyzeUrl
+import io.legado.app.help.glide.RustImageModelLoader
+import io.legado.app.model.webBook.RustAnalyzerBridge
+import java.util.regex.Pattern
 
 class GlideImageGetter(
     context: Context,
@@ -51,6 +49,7 @@ class GlideImageGetter(
     private val bookSource by lazy {
         sourceOrigin?.let { appDb.bookSourceDao.getBookSource(it) }
     }
+    private val paramPattern: Pattern = Pattern.compile("\\s*,\\s*(?=\\{)")
 
     override fun getDrawable(source: String?): Drawable {
         val context = contextRef.get()
@@ -59,22 +58,17 @@ class GlideImageGetter(
         }
         var urlOption: Map<String, String>? = null
         if (source.startsWith("data")) {
-            var data: String? = null
+            var data = source
             val urlMatcher = paramPattern.matcher(source)
             if (urlMatcher.find()) {
                 val urlOptionStr = source.substring(urlMatcher.end())
-                urlOption = GSON.fromJsonObject<Map<String, String>>(urlOptionStr).getOrNull()
-                data = if (source.startsWith("data:image/svg")) {
-                    source.take(urlMatcher.start())
-                } else {
-                    AnalyzeUrl(
-                        source,
-                        source = bookSource
-                    ).url
-                }
+                urlOption = UrlOptions.parseStringMap(urlOptionStr, "GlideImageGetter.dataImage")
+                data = source.take(urlMatcher.start())
             }
-            val inputStream =
-                ByteArrayInputStream(Base64.decode((data ?: source).substringAfter(",")))
+            val bytes = bookSource?.let {
+                RustAnalyzerBridge.fetchRaw(it, data, "GlideImageGetter.dataImage")
+            } ?: RustAnalyzerBridge.fetchRawUrl(data, "GlideImageGetter.dataImage").body
+            val inputStream = ByteArrayInputStream(bytes)
             val (pictureDrawable, size) = SvgUtils.createDrawable(inputStream)
                 ?: return emptyDrawable
             val rect = getDrawableRect(size, urlOption)
@@ -90,12 +84,12 @@ class GlideImageGetter(
         val urlMatcher = paramPattern.matcher(source)
         if (urlMatcher.find()) {
             val urlOptionStr = source.substring(urlMatcher.end())
-            urlOption = GSON.fromJsonObject<Map<String, String>>(urlOptionStr).getOrNull()
+            urlOption = UrlOptions.parseStringMap(urlOptionStr, "GlideImageGetter.remoteImage")
         }
         val target = ImageTarget(urlDrawable, source, urlOption)
         var options = RequestOptions()
         if (sourceOrigin != null) {
-            options = options.set(OkHttpModelLoader.sourceOriginOption, sourceOrigin)
+            options = options.set(RustImageModelLoader.sourceOriginOption, sourceOrigin)
         }
         Glide.with(context).lifecycle(lifecycle)
             .load(source)

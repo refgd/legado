@@ -5,7 +5,6 @@ import androidx.lifecycle.MutableLiveData
 import com.google.gson.stream.JsonWriter
 import io.legado.app.R
 import io.legado.app.base.BaseViewModel
-import io.legado.app.constant.AppLog
 import io.legado.app.data.appDb
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookSource
@@ -13,15 +12,14 @@ import io.legado.app.data.entities.BookSourcePart
 import io.legado.app.exception.NoStackTraceException
 import io.legado.app.help.config.AppConfig
 import io.legado.app.help.coroutine.Coroutine
-import io.legado.app.help.http.decompressed
-import io.legado.app.help.http.newCallResponseBody
-import io.legado.app.help.http.okHttpClient
-import io.legado.app.help.http.text
-import io.legado.app.model.analyzeRule.AnalyzeUrl
 import io.legado.app.model.webBook.WebBook
+import io.legado.app.model.webBook.isRustNetworkAccessError
 import io.legado.app.utils.FileUtils
 import io.legado.app.utils.GSON
 import io.legado.app.utils.NetworkUtils
+import io.legado.app.utils.RustRemoteFetch
+import io.legado.app.utils.UrlOption
+import io.legado.app.utils.UrlOptions
 import io.legado.app.utils.fromJsonArray
 import io.legado.app.utils.fromJsonObject
 import io.legado.app.utils.isAbsUrl
@@ -54,9 +52,9 @@ class BookshelfViewModel(application: Application) : BaseViewModel(application) 
                 }
                 val baseUrl = NetworkUtils.getBaseUrl(bookUrl) ?: continue
                 var source: BookSource? = null
-                val urlMatcher = AnalyzeUrl.paramPattern.matcher(bookUrl)
+                val urlMatcher = UrlOptions.paramPattern.matcher(bookUrl)
                 if (urlMatcher.find()) { //指定书源
-                    val origin = GSON.fromJsonObject<AnalyzeUrl.UrlOption>(
+                    val origin = GSON.fromJsonObject<UrlOption>(
                         bookUrl.substring(urlMatcher.end())
                     ).getOrNull()?.getOrigin()
                     try {
@@ -91,22 +89,41 @@ class BookshelfViewModel(application: Application) : BaseViewModel(application) 
                     origin = bookSource.bookSourceUrl,
                     originName = bookSource.bookSourceName
                 )
-                kotlin.runCatching {
+                val rustBook = try {
                     WebBook.getBookInfoAwait(bookSource, book)
-                }.onSuccess {
-                    val dbBook = appDb.bookDao.getBook(it.name, it.author)
-                    if (dbBook != null) {
-                        val toc = WebBook.getChapterListAwait(bookSource, it).getOrThrow()
-                        dbBook.migrateTo(it, toc)
-                        appDb.bookDao.insert(it)
-                        appDb.bookChapterDao.insert(*toc.toTypedArray())
-                    } else {
-                        it.order = appDb.bookDao.minOrder - 1
-                        it.save()
+                } catch (error: Throwable) {
+                    if (error.isRustNetworkAccessError()) {
+                        error.printOnDebug()
+                        continue
                     }
-                    successCount++
-                    addBookProgressLiveData.postValue(successCount)
+                    throw NoStackTraceException(
+                        "Bookshelf add URL Rust detail failed for $bookUrl: " +
+                            (error.localizedMessage ?: error.toString())
+                    )
                 }
+                val dbBook = appDb.bookDao.getBook(rustBook.name, rustBook.author)
+                if (dbBook != null) {
+                    val toc = try {
+                        WebBook.getChapterListAwait(bookSource, rustBook).getOrThrow()
+                    } catch (error: Throwable) {
+                        if (error.isRustNetworkAccessError()) {
+                            error.printOnDebug()
+                            continue
+                        }
+                        throw NoStackTraceException(
+                            "Bookshelf add URL Rust toc failed for ${rustBook.name}: " +
+                                (error.localizedMessage ?: error.toString())
+                        )
+                    }
+                    dbBook.migrateTo(rustBook, toc)
+                    appDb.bookDao.insert(rustBook)
+                    appDb.bookChapterDao.insert(*toc.toTypedArray())
+                } else {
+                    rustBook.order = appDb.bookDao.minOrder - 1
+                    rustBook.save()
+                }
+                successCount++
+                addBookProgressLiveData.postValue(successCount)
             }
         }.onSuccess {
             if (successCount > 0) {
@@ -115,7 +132,14 @@ class BookshelfViewModel(application: Application) : BaseViewModel(application) 
                 context.toastOnUi("添加网址失败")
             }
         }.onError {
-            AppLog.put("添加网址出错\n${it.localizedMessage}", it, true)
+            if (it.isRustNetworkAccessError()) {
+                it.printOnDebug()
+                context.toastOnUi("添加网址失败")
+                return@onError
+            }
+            throw NoStackTraceException(
+                "Bookshelf add URL Rust analyzer failed: ${it.localizedMessage ?: it}"
+            )
         }.onFinally {
             addBookProgressLiveData.postValue(-1)
         }
@@ -155,11 +179,10 @@ class BookshelfViewModel(application: Application) : BaseViewModel(application) 
             val text = str.trim()
             when {
                 text.isAbsUrl() -> {
-                    okHttpClient.newCallResponseBody {
-                        url(text)
-                    }.decompressed().text().let {
-                        importBookshelf(it, groupId)
-                    }
+                    importBookshelf(
+                        RustRemoteFetch.text(text, "BookshelfViewModel.importBookshelf"),
+                        groupId
+                    )
                 }
 
                 text.isJsonArray() -> {

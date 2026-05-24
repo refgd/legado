@@ -24,16 +24,16 @@ object BookSourceController {
     fun saveSource(postData: String?): ReturnData {
         val returnData = ReturnData()
         postData ?: return returnData.setErrorMsg("数据不能为空")
-        val bookSource = GSON.fromJsonObject<BookSource>(postData).getOrNull()
-        if (bookSource != null) {
-            if (TextUtils.isEmpty(bookSource.bookSourceName) || TextUtils.isEmpty(bookSource.bookSourceUrl)) {
-                returnData.setErrorMsg("源名称和URL不能为空")
-            } else {
-                appDb.bookSourceDao.insert(bookSource)
-                returnData.setData("")
-            }
+        val bookSource = GSON.fromJsonObject<BookSource>(postData).getOrElse {
+            return returnData.setErrorMsg(
+                "BookSourceController.saveSource JSON is invalid for Rust analyzer handoff: ${it.localizedMessage}"
+            )
+        }
+        if (TextUtils.isEmpty(bookSource.bookSourceName) || TextUtils.isEmpty(bookSource.bookSourceUrl)) {
+            returnData.setErrorMsg("源名称和URL不能为空")
         } else {
-            returnData.setErrorMsg("转换源失败")
+            appDb.bookSourceDao.insert(bookSource)
+            returnData.setData("")
         }
         return returnData
     }
@@ -41,17 +41,22 @@ object BookSourceController {
     fun saveSources(postData: String?): ReturnData {
         postData ?: return ReturnData().setErrorMsg("数据为空")
         val okSources = arrayListOf<BookSource>()
-        val bookSources = GSON.fromJsonArray<BookSource>(postData).getOrNull()
-        if (bookSources.isNullOrEmpty()) {
-            return ReturnData().setErrorMsg("转换源失败")
+        val bookSources = GSON.fromJsonArray<BookSource>(postData).getOrElse {
+            return ReturnData().setErrorMsg(
+                "BookSourceController.saveSources JSON is invalid for Rust analyzer handoff: ${it.localizedMessage}"
+            )
         }
-        bookSources.forEach { bookSource ->
-            if (bookSource.bookSourceName.isNotBlank()
-                && bookSource.bookSourceUrl.isNotBlank()
-            ) {
-                appDb.bookSourceDao.insert(bookSource)
-                okSources.add(bookSource)
+        if (bookSources.isEmpty()) {
+            return ReturnData().setErrorMsg("源列表不能为空")
+        }
+        bookSources.forEachIndexed { index, bookSource ->
+            if (bookSource.bookSourceName.isBlank() || bookSource.bookSourceUrl.isBlank()) {
+                return ReturnData().setErrorMsg(
+                    "BookSourceController.saveSources item $index is invalid for Rust analyzer handoff: source name and URL are required"
+                )
             }
+            appDb.bookSourceDao.insert(bookSource)
+            okSources.add(bookSource)
         }
         return ReturnData().setData(okSources)
     }
@@ -68,13 +73,13 @@ object BookSourceController {
     }
 
     fun deleteSources(postData: String?): ReturnData {
-        kotlin.runCatching {
-            GSON.fromJsonArray<BookSource>(postData).getOrThrow().let {
-                SourceHelp.deleteBookSources(it)
-            }
-        }.onFailure {
-            return ReturnData().setErrorMsg(it.localizedMessage ?: "数据格式错误")
+        postData ?: return ReturnData().setErrorMsg("数据不能为空")
+        val sources = GSON.fromJsonArray<BookSource>(postData).getOrElse {
+            return ReturnData().setErrorMsg(
+                "BookSourceController.deleteSources JSON is invalid for Rust analyzer handoff: ${it.localizedMessage}"
+            )
         }
+        SourceHelp.deleteBookSources(sources)
         return ReturnData().setData("已执行"/*okSources*/)
     }
 }

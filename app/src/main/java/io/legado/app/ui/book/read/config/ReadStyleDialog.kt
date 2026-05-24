@@ -39,8 +39,6 @@ import io.legado.app.help.book.isImage
 import io.legado.app.help.config.AppConfig
 import io.legado.app.help.config.ReadBookConfig
 import io.legado.app.help.config.ThemeConfig
-import io.legado.app.help.http.newCallResponseBody
-import io.legado.app.help.http.okHttpClient
 import io.legado.app.lib.dialogs.SelectItem
 import io.legado.app.lib.dialogs.alert
 import io.legado.app.lib.dialogs.selector
@@ -89,6 +87,7 @@ import io.legado.app.utils.printOnDebug
 import io.legado.app.utils.putPrefString
 import io.legado.app.utils.readBytes
 import io.legado.app.utils.readUri
+import io.legado.app.utils.RustRemoteFetch
 import io.legado.app.utils.setSelectionSafely
 import io.legado.app.utils.showDialogFragment
 import io.legado.app.utils.stackTraceStr
@@ -1200,11 +1199,7 @@ class ReadStyleDialog : BaseDialogFragment(R.layout.dialog_read_book_style),
 
     private fun importNetConfig(url: String) {
         execute {
-            okHttpClient.newCallResponseBody {
-                url(url)
-            }.bytes().let {
-                importConfig(it)
-            }
+            importConfig(RustRemoteFetch.bytes(url, "ReadStyleDialog.importNetConfig").body)
         }.onError {
             longToast(it.stackTraceStr)
         }

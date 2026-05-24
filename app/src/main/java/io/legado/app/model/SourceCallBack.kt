@@ -2,11 +2,10 @@ package io.legado.app.model
 
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
-import com.script.rhino.runScriptWithContext
-import io.legado.app.constant.AppLog
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookChapter
 import io.legado.app.data.entities.BookSource
+import io.legado.app.exception.NoStackTraceException
 import io.legado.app.help.coroutine.Coroutine
 import io.legado.app.ui.login.SourceLoginJsExtensions
 import io.legado.app.utils.isTrue
@@ -17,7 +16,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlin.String
-import kotlin.onFailure
 
 object SourceCallBack {
     const val CLICK_AUTHOR = "clickAuthor"
@@ -62,23 +60,21 @@ object SourceCallBack {
         }
         activity.lifecycleScope.launch(IO) {
             val java = SourceLoginJsExtensions(activity, source,  bookType)
-            kotlin.runCatching {
-                val result = runScriptWithContext {
-                    source.evalJS(jsStr) {
-                        put("event", event)
-                        put("java", java)
-                        put("result", result)
-                        put("book", book)
-                        put("chapter", chapter)
-                    }.toString()
-                }
-                if (!result.isTrue()) {
+            try {
+                val callbackResult = source.evalJS(jsStr) {
+                    put("event", event)
+                    put("java", java)
+                    put("result", result)
+                    put("book", book)
+                    put("chapter", chapter)
+                }.toString()
+                if (!callbackResult.isTrue()) {
                     withContext(Dispatchers.Main) {
                         noCall?.invoke()
                     }
                 }
-            }.onFailure {
-                AppLog.put("${source.bookSourceName}\n书源执行回调事件${event}出错\n${it.localizedMessage}", it, true)
+            } catch (error: Throwable) {
+                throw callbackError(source, event, error)
             }
         }
     }
@@ -95,17 +91,15 @@ object SourceCallBack {
         if (jsStr.isNullOrEmpty()) return
         Coroutine.async {
             withTimeout(60000L) {
-                runScriptWithContext(coroutineContext) {
-                    source.evalJS(jsStr) {
-                        put("event", event)
-                        put("result", result)
-                        put("book", book)
-                        put("chapter", chapter)
-                    }
+                source.evalJS(jsStr) {
+                    put("event", event)
+                    put("result", result)
+                    put("book", book)
+                    put("chapter", chapter)
                 }
             }
         }.onError {
-            AppLog.put("${source.bookSourceName}\n书源执行回调事件${event}出错\n${it.localizedMessage}", it, true)
+            throw callbackError(source, event, it)
         }
     }
 
@@ -113,21 +107,25 @@ object SourceCallBack {
         val jsStr = source.getContentRule().callBackJs
         if (jsStr.isNullOrEmpty()) return
         scope.launch(IO) {
-            kotlin.runCatching {
+            try {
                 withTimeout(30000L) {
-                    runScriptWithContext {
-                        source.evalJS(jsStr) {
-                            put("event", event)
-                            put("result", null)
-                            put("book", null)
-                            put("chapter", null)
-                        }
+                    source.evalJS(jsStr) {
+                        put("event", event)
+                        put("result", null)
+                        put("book", null)
+                        put("chapter", null)
                     }
                 }
-            }.onFailure {
-                AppLog.put("${source.bookSourceName}\n书源执行回调事件${event}出错\n${it.localizedMessage}", it, true)
+            } catch (error: Throwable) {
+                throw callbackError(source, event, error)
             }
         }
+    }
+
+    private fun callbackError(source: BookSource, event: String, error: Throwable): NoStackTraceException {
+        return NoStackTraceException(
+            "${source.bookSourceName} Rust callback JS failed for event $event: ${error.localizedMessage ?: error}"
+        )
     }
 
 }

@@ -9,9 +9,6 @@ interface CookieDao {
     @Query("SELECT * FROM cookies Where url = :url")
     fun get(url: String): Cookie?
 
-    @Query("select * from cookies where url like '%|%'")
-    fun getOkHttpCookies(): List<Cookie>
-
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     fun insert(vararg cookie: Cookie)
 
@@ -22,5 +19,5 @@ interface CookieDao {
     fun delete(url: String)
 
     @Query("delete from cookies where url like '%|%'")
-    fun deleteOkHttp()
+    fun deletePipeDelimitedCookies()
 }

@@ -12,12 +12,12 @@ import io.legado.app.lib.mobi.KF8Book
 import io.legado.app.lib.mobi.MobiBook
 import io.legado.app.lib.mobi.MobiReader
 import io.legado.app.lib.mobi.entities.TOC
+import io.legado.app.model.webBook.RustAnalyzerBridge
 import io.legado.app.utils.FileUtils
 import io.legado.app.utils.HtmlFormatter
 import io.legado.app.utils.compressPreservingAlpha
 import io.legado.app.utils.preferredCoverExtension
 import io.legado.app.utils.printOnDebug
-import org.jsoup.Jsoup
 import java.io.File
 import java.io.FileOutputStream
 import java.io.InputStream
@@ -106,8 +106,10 @@ class MobiFile(var book: Book) {
             if (section != null) {
                 val chapter = BookChapter()
                 val content = kF6Book.getSectionText(section)
-                val soup = Jsoup.parse(content)
-                val title = soup.getElementsByTag("title").first()?.text() ?: "卷首"
+                val title = RustAnalyzerBridge.htmlTitle(
+                    content,
+                    "MobiFile.KF6.firstSectionTitle"
+                ).ifBlank { "卷首" }
                 chapter.bookUrl = book.bookUrl
                 chapter.title = title
                 chapter.url = "0:" + section.href
@@ -147,8 +149,10 @@ class MobiFile(var book: Book) {
             if (section != null) {
                 val chapter = BookChapter()
                 val content = kf8Book.getSectionText(section)
-                val soup = Jsoup.parse(content)
-                val title = soup.getElementsByTag("title").first()?.text() ?: "卷首"
+                val title = RustAnalyzerBridge.htmlTitle(
+                    content,
+                    "MobiFile.KF8.firstSectionTitle"
+                ).ifBlank { "卷首" }
                 chapter.bookUrl = book.bookUrl
                 chapter.title = title
                 chapter.url = "0:" + section.href
@@ -205,17 +209,12 @@ class MobiFile(var book: Book) {
             sb.append(kf6Book.getSectionText(section))
         }
 
-        val soup = Jsoup.parse(sb.toString())
-
-        soup.select("title").remove()
-        soup.select("[style*=display:none]").remove()
-        soup.select("img[recindex]").forEach {
-            val recindex = it.attr("recindex")
-            it.clearAttributes()
-            it.attr("src", "recindex:$recindex")
-        }
-
-        return format(soup.outerHtml())
+        val html = RustAnalyzerBridge.mobiContentHtml(
+            sb.toString(),
+            rewriteRecindexImages = true,
+            rulePath = "MobiFile.KF6.contentHtml"
+        )
+        return format(html)
     }
 
     private fun getContentKF8(kf8Book: KF8Book, chapter: BookChapter): String? {
@@ -243,12 +242,12 @@ class MobiFile(var book: Book) {
             sb.append(kf8Book.getSectionText(section))
         }
 
-        val soup = Jsoup.parse(sb.toString())
-
-        soup.select("title").remove()
-        soup.select("[style*=display:none]").remove()
-
-        return format(soup.outerHtml())
+        val html = RustAnalyzerBridge.mobiContentHtml(
+            sb.toString(),
+            rewriteRecindexImages = false,
+            rulePath = "MobiFile.KF8.contentHtml"
+        )
+        return format(html)
     }
 
     private fun format(html: String): String {

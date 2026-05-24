@@ -26,6 +26,7 @@ import io.legado.app.help.config.AppConfig
 import io.legado.app.model.ReadBook
 import io.legado.app.model.localBook.LocalBook
 import io.legado.app.model.webBook.WebBook
+import io.legado.app.model.webBook.isRustNetworkAccessError
 import io.legado.app.ui.book.audio.AudioPlayActivity
 import io.legado.app.ui.book.info.BookInfoActivity
 import io.legado.app.ui.book.manga.ReadMangaActivity
@@ -59,7 +60,7 @@ class BookTocLoadingActivity :
         ) { result ->
             result
                 .onSuccess { startReadActivity(it) }
-                .onFailure { openBookInfo(it.localizedMessage) }
+                .onFailure { throw it }
         }
     }
 
@@ -140,8 +141,15 @@ class BookTocLoadingViewModel(application: Application) : BaseViewModel(applicat
         }.onSuccess {
             success(Result.success(it))
         }.onError {
-            AppLog.put("LoadTocError:${it.localizedMessage}", it)
-            success(Result.failure(it))
+            if (it.isRustNetworkAccessError()) {
+                AppLog.put("BookTocLoading network load failed\n${it.localizedMessage}", it)
+                success(Result.failure(it))
+                return@onError
+            }
+            throw NoStackTraceException(
+                "BookTocLoading Rust detail/toc failed: " +
+                        (it.localizedMessage ?: it::class.java.name)
+            )
         }
     }
 

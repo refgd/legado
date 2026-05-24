@@ -1,10 +1,7 @@
 package io.legado.app.model.localBook
 
 import android.net.Uri
-import android.util.Base64
 import androidx.documentfile.provider.DocumentFile
-import com.script.ScriptBindings
-import com.script.rhino.RhinoScriptEngine
 import io.legado.app.R
 import io.legado.app.constant.AppLog
 import io.legado.app.constant.AppPattern
@@ -18,6 +15,7 @@ import io.legado.app.exception.NoBooksDirException
 import io.legado.app.exception.NoStackTraceException
 import io.legado.app.exception.TocEmptyException
 import io.legado.app.help.AppWebDav
+import io.legado.app.model.webBook.RustAnalyzerBridge
 import io.legado.app.help.book.BookHelp
 import io.legado.app.help.book.ContentProcessor
 import io.legado.app.help.book.addType
@@ -35,7 +33,6 @@ import io.legado.app.help.book.simulatedTotalChapterNum
 import io.legado.app.help.config.AppConfig
 import io.legado.app.lib.webdav.WebDav
 import io.legado.app.lib.webdav.WebDavException
-import io.legado.app.model.analyzeRule.AnalyzeUrl
 import io.legado.app.utils.ArchiveUtils
 import io.legado.app.utils.FileDoc
 import io.legado.app.utils.FileUtils
@@ -60,7 +57,6 @@ import java.io.FileOutputStream
 import java.io.InputStream
 import java.util.regex.Pattern
 import androidx.core.net.toUri
-import kotlinx.coroutines.currentCoroutineContext
 
 /**
  * 书籍文件导入 目录正文解析
@@ -431,11 +427,13 @@ object LocalBook {
                 val js =
                     AppConfig.bookImportFileName + "\nJSON.stringify({author:author,name:name})"
                 //在脚本中定义如何分解文件名成书名、作者名
-                val jsonStr = RhinoScriptEngine.run {
-                    val bindings = ScriptBindings()
-                    bindings["src"] = tempFileName
-                    eval(js, bindings)
-                }.toString()
+                val jsonStr = RustAnalyzerBridge.evalJsRaw(
+                    script = """
+                        var src = ${GSON.toJson(tempFileName)};
+                        $js
+                    """.trimIndent(),
+                    rulePath = "LocalBook.analyzeNameAuthor"
+                )
                 val bookMess = GSON.fromJsonObject<HashMap<String, String>>(jsonStr)
                     .getOrThrow()
                 name = bookMess["name"] ?: ""
@@ -513,16 +511,15 @@ object LocalBook {
         AppConfig.defaultBookTreeUri
             ?: throw NoBooksDirException()
         val inputStream = when {
-            str.isAbsUrl() -> AnalyzeUrl(
-                str, source = source, callTimeout = 0,
-                coroutineContext = currentCoroutineContext()
-            ).getInputStreamAwait()
+            str.isAbsUrl() -> {
+                val bytes = source?.let {
+                    RustAnalyzerBridge.fetchRaw(it, str, "LocalBook.saveBookFile")
+                } ?: RustAnalyzerBridge.fetchRawUrl(str, "LocalBook.saveBookFile").body
+                ByteArrayInputStream(bytes)
+            }
 
             str.isDataUrl() -> ByteArrayInputStream(
-                Base64.decode(
-                    str.substringAfter("base64,"),
-                    Base64.DEFAULT
-                )
+                RustAnalyzerBridge.fetchRawUrl(str, "LocalBook.saveBookFile.dataUrl").body
             )
 
             else -> throw NoStackTraceException("在线导入书籍支持http/https/DataURL")

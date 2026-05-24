@@ -24,7 +24,6 @@ import io.legado.app.base.VMBaseActivity
 import io.legado.app.constant.AppConst
 import io.legado.app.constant.AppConst.imagePathKey
 import io.legado.app.databinding.ActivityWebViewBinding
-import io.legado.app.help.http.CookieStore
 import io.legado.app.help.source.SourceVerificationHelp
 import io.legado.app.lib.dialogs.SelectItem
 import io.legado.app.lib.dialogs.alert
@@ -51,7 +50,6 @@ import io.legado.app.help.webView.WebJsExtensions
 import io.legado.app.help.webView.WebJsExtensions.Companion.basicJs
 import io.legado.app.help.webView.WebJsExtensions.Companion.nameBasic
 import io.legado.app.help.webView.WebJsExtensions.Companion.nameJava
-import io.legado.app.help.http.CookieManager as AppCookieManager
 import androidx.core.net.toUri
 import io.legado.app.exception.NoStackTraceException
 import io.legado.app.help.webView.PooledWebView
@@ -59,12 +57,14 @@ import io.legado.app.help.webView.WebViewPool
 import io.legado.app.help.webView.WebViewPool.BLANK_HTML
 import io.legado.app.help.webView.WebViewPool.DATA_HTML
 import io.legado.app.model.Download
+import io.legado.app.model.webBook.RustAnalyzerBridge
 import splitties.systemservices.powerManager
 import java.lang.ref.WeakReference
 import java.net.URLDecoder
 import androidx.core.graphics.createBitmap
 import io.legado.app.help.WebCacheManager
 import io.legado.app.help.webView.WebJsExtensions.Companion.nameCache
+import io.legado.app.utils.GSON
 
 class WebViewActivity : VMBaseActivity<ActivityWebViewBinding, WebViewModel>() {
     companion object {
@@ -251,7 +251,9 @@ class WebViewActivity : VMBaseActivity<ActivityWebViewBinding, WebViewModel>() {
                 userAgentString = it
             }
         }
-        AppCookieManager.applyToWebView(url)
+        viewModel.source?.let {
+            RustAnalyzerBridge.applyCookieToWebView(it, url, "WebViewActivity.applyCookieToWebView")
+        }
         currentWebView.setOnLongClickListener {
             val hitTestResult = currentWebView.hitTestResult
             if (hitTestResult.type == WebView.HitTestResult.IMAGE_TYPE ||
@@ -457,7 +459,7 @@ class WebViewActivity : VMBaseActivity<ActivityWebViewBinding, WebViewModel>() {
             super.onPageFinished(view, url)
             val cookieManager = CookieManager.getInstance()
             url?.let {
-                CookieStore.setCookie(it, cookieManager.getCookie(it))
+                syncPageCookieToRust(it, cookieManager.getCookie(it))
             }
             view?.title?.let { title ->
                 if (title != url && title != view.url && title.isNotBlank()) {
@@ -471,8 +473,9 @@ class WebViewActivity : VMBaseActivity<ActivityWebViewBinding, WebViewModel>() {
                     } else if (isCloudflareChallenge && viewModel.sourceVerificationEnable) {
                         viewModel.saveVerificationResult(currentWebView) {
                             finish()
-                        }
-                    }
+        }
+    }
+
                 }
             }
         }
@@ -505,6 +508,22 @@ class WebViewActivity : VMBaseActivity<ActivityWebViewBinding, WebViewModel>() {
             handler?.proceed()
         }
 
+    }
+
+    private fun syncPageCookieToRust(url: String, cookie: String?) {
+        val source = viewModel.source ?: return
+        runCatching {
+            RustAnalyzerBridge.evalJs(
+                source = source,
+                script = "cookie.setCookie(${GSON.toJson(url)}, ${GSON.toJson(cookie.orEmpty())})",
+                rulePath = "WebViewActivity.syncCookie"
+            )
+        }.onFailure {
+            AppLog.put(
+                "Rust analyzer browser WebView cookie sync failed for ${source.getTag()}: ${it.localizedMessage}",
+                NoStackTraceException(it.localizedMessage ?: "Rust browser WebView cookie sync failed")
+            )
+        }
     }
 
 }

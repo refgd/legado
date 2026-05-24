@@ -1,12 +1,6 @@
 package io.legado.app.help.http
 
 import androidx.annotation.Keep
-import okhttp3.Headers
-import okhttp3.Protocol
-import okhttp3.Request
-import okhttp3.Response
-import okhttp3.Response.Builder
-import okhttp3.ResponseBody
 
 /**
  * An HTTP response.
@@ -14,76 +8,71 @@ import okhttp3.ResponseBody
 @Keep
 @Suppress("unused", "MemberVisibilityCanBePrivate")
 class StrResponse {
-    var raw: Response
-        private set
     var body: String? = null
         private set
-    var errorBody: ResponseBody? = null
+    var errorBody: String? = null
         private set
     var callTime = 0
+    private var responseUrl: String = "http://localhost/"
+    private var responseCode: Int = 200
+    private var responseMessage: String = "OK"
+    private var responseHeaders: Map<String, List<String>> = emptyMap()
 
-    constructor(rawResponse: Response, body: String?) {
-        this.raw = rawResponse
+    constructor(url: String, body: String?) : this(url, body, 200, "OK")
+
+    constructor(url: String, body: String?, code: Int, message: String) {
+        responseUrl = url.ifBlank { "http://localhost/" }
+        responseCode = code.coerceIn(100, 599)
+        responseMessage = message.ifBlank { "OK" }
         this.body = body
     }
 
-    constructor(url: String, body: String?) {
-        val request = try {
-            Request.Builder().url(url).build()
-        } catch (e: Exception) {
-            Request.Builder().url("http://localhost/").build()
-        }
-        raw = Builder()
-            .code(200)
-            .message("OK")
-            .protocol(Protocol.HTTP_1_1)
-            .request(request)
-            .build()
-        this.body = body
-    }
-
-    constructor(rawResponse: Response, errorBody: ResponseBody?) {
-        this.raw = rawResponse
+    constructor(
+        url: String,
+        errorBody: String?,
+        code: Int,
+        message: String,
+        headers: Map<String, List<String>>
+    ) {
+        responseUrl = url.ifBlank { "http://localhost/" }
+        responseCode = code.coerceIn(100, 599)
+        responseMessage = message.ifBlank { "OK" }
+        responseHeaders = headers
         this.errorBody = errorBody
     }
 
     fun putCallTime(callTime: Int) {
         this.callTime = callTime
     }
-    fun raw() = raw
+    fun raw() = this
     fun callTime() = callTime
 
-    fun url(): String {
-        raw.networkResponse?.let {
-            return it.request.url.toString()
-        }
-        return raw.request.url.toString()
-    }
+    fun url(): String = responseUrl
 
     val url: String get() = url()
 
     fun body() = body
 
     fun code(): Int {
-        return raw.code
+        return responseCode
     }
 
     fun message(): String {
-        return raw.message
+        return responseMessage
     }
 
-    fun headers(): Headers {
-        return raw.headers
+    fun headers(): Map<String, List<String>> {
+        return responseHeaders
     }
 
-    fun isSuccessful(): Boolean = raw.isSuccessful
+    fun isSuccessful(): Boolean = responseCode in 200..299
 
-    fun errorBody(): ResponseBody? {
+    fun errorBody(): String? {
         return errorBody
     }
 
     override fun toString(): String {
-        return raw.toString()
+        return "Response{code=$responseCode, message=$responseMessage, url=$responseUrl}"
     }
 
 }

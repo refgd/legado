@@ -1,21 +1,23 @@
 package io.legado.app.model.localBook
 
 import androidx.annotation.Keep
-import com.script.ScriptBindings
-import com.script.rhino.RhinoScriptEngine
 import io.legado.app.constant.AppLog
 import io.legado.app.data.appDb
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookChapter
+import io.legado.app.data.entities.ReplaceBook
 import io.legado.app.data.entities.TxtTocRule
 import io.legado.app.exception.EmptyFileException
 import io.legado.app.help.DefaultData
 import io.legado.app.help.book.isLocalModified
 import io.legado.app.help.config.AppConfig
+import io.legado.app.model.webBook.RustAnalyzerBridge
 import io.legado.app.utils.EncodingDetect
+import io.legado.app.utils.GSON
 import io.legado.app.utils.MD5Utils
 import io.legado.app.utils.StringUtils
 import io.legado.app.utils.Utf8BomUtils
+import io.legado.app.utils.fromJsonObject
 import java.io.FileNotFoundException
 import java.nio.charset.Charset
 import java.util.regex.Matcher
@@ -576,17 +578,16 @@ class TextFile(private var book: Book) {
     }
 
     private fun evalJs(content: String, jsStr: String, index: Int, prevTitle: String?, prevLength: Int = -1, toc: ArrayList<BookChapter>? = null):String {
-        return RhinoScriptEngine.run {
-            val bindings = ScriptBindings()
-            bindings["result"] = content
-            bindings["book"] = replaceBook
-            bindings["index"] = index
-            bindings["prevTitle"] = prevTitle
-            bindings["prevLength"] = prevLength
-            bindings["lastVolumeTitle"] = lastVolumeTitle.value
-            bindings["java"] = JsExtensions(lastVolumeTitle, toc)
-            eval(jsStr, bindings)
-        }.toString()
+        return evalTxtTocReplacementWithRust(
+            replaceBook = replaceBook,
+            lastVolumeTitle = lastVolumeTitle,
+            content = content,
+            jsStr = jsStr,
+            index = index,
+            prevTitle = prevTitle,
+            prevLength = prevLength,
+            toc = toc
+        )
     }
 
 
@@ -622,3 +623,71 @@ class TextFile(private var book: Book) {
     }
 
 }
+
+internal fun evalTxtTocReplacementWithRust(
+    replaceBook: ReplaceBook,
+    lastVolumeTitle: TextFile.MutableRef<String>,
+    content: String,
+    jsStr: String,
+    index: Int,
+    prevTitle: String?,
+    prevLength: Int = -1,
+    toc: ArrayList<BookChapter>? = null
+): String {
+    val volumeStart = toc?.lastOrNull()?.end ?: 0
+    val script = """
+        var result = ${GSON.toJson(content)};
+        var book = ${GSON.toJson(replaceBook)};
+        var index = $index;
+        var prevTitle = ${GSON.toJson(prevTitle)};
+        var prevLength = $prevLength;
+        var lastVolumeTitle = ${GSON.toJson(lastVolumeTitle.value)};
+        var __legadoTextFileVolumes = [];
+        var java = {
+            putVolume: function(title) {
+                var text = String(title == null ? "" : title);
+                lastVolumeTitle = text;
+                __legadoTextFileVolumes.push({title: text, start: $volumeStart});
+                return null;
+            }
+        };
+        var __legadoTextFileValue = eval(${GSON.toJson(jsStr)});
+        JSON.stringify({
+            value: String(__legadoTextFileValue == null ? "" : __legadoTextFileValue),
+            lastVolumeTitle: String(lastVolumeTitle == null ? "" : lastVolumeTitle),
+            volumes: __legadoTextFileVolumes
+        });
+    """.trimIndent()
+    val raw = RustAnalyzerBridge.evalJsRaw(
+        script = script,
+        result = content,
+        baseUrl = "legado://txt-toc/${replaceBook.bookUrl.ifBlank { "local" }}",
+        rulePath = "TextFile.evalJs"
+    )
+    val output = GSON.fromJsonObject<TxtTocEvalOutput>(raw).getOrElse {
+        error("TextFile.evalJs returned invalid Rust result: ${it.localizedMessage}")
+    }
+    lastVolumeTitle.value = output.lastVolumeTitle
+    output.volumes.forEach { volume ->
+        toc?.add(
+            BookChapter(
+                title = volume.title,
+                isVolume = true,
+                start = volume.start,
+                end = volume.start
+            )
+        )
+    }
+    return output.value
+}
+
+private data class TxtTocEvalOutput(
+    val value: String = "",
+    val lastVolumeTitle: String = "",
+    val volumes: List<TxtTocEvalVolume> = emptyList()
+)
+
+private data class TxtTocEvalVolume(
+    val title: String = "",
+    val start: Long = 0
+)

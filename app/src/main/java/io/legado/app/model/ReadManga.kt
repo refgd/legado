@@ -10,6 +10,7 @@ import io.legado.app.data.entities.BookProgressComparison
 import io.legado.app.data.entities.BookSource
 import io.legado.app.data.entities.ReadRecentBook
 import io.legado.app.data.entities.ReadRecord
+import io.legado.app.exception.NoStackTraceException
 import io.legado.app.help.AppWebDav
 import io.legado.app.help.ConcurrentRateLimiter
 import io.legado.app.help.ReadRecordDailyHelper
@@ -193,7 +194,9 @@ object ReadManga : CoroutineScope by MainScope() {
                 }
             }
         }.onError {
-            AppLog.put("加载正文出错\n${it.localizedMessage}")
+            throw NoStackTraceException(
+                "ReadManga Rust content failed at chapter $index: ${it.localizedMessage ?: it}"
+            )
         }
     }
 

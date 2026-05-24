@@ -17,16 +17,16 @@ import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookSource
 import io.legado.app.databinding.DialogAddToBookshelfBinding
 import io.legado.app.exception.NoStackTraceException
-import io.legado.app.model.analyzeRule.AnalyzeUrl
 import io.legado.app.model.webBook.WebBook
 import io.legado.app.ui.book.info.BookInfoActivity
-import io.legado.app.utils.GSON
 import io.legado.app.utils.NetworkUtils
-import io.legado.app.utils.fromJsonObject
 import io.legado.app.utils.setLayout
 import io.legado.app.utils.startActivity
 import io.legado.app.utils.toastOnUi
 import io.legado.app.utils.viewbindingdelegate.viewBinding
+import kotlinx.coroutines.CancellationException
+import org.json.JSONObject
+import java.util.regex.Pattern
 
 /**
  * 添加书籍链接到书架，需要对应网站书源
@@ -37,6 +37,10 @@ import io.legado.app.utils.viewbindingdelegate.viewBinding
  * - 在所有启用的书源中使用详情页正则匹配${origin}/${path}, {origin: bookSourceUrl}
  */
 class AddToBookshelfDialog() : BaseDialogFragment(R.layout.dialog_add_to_bookshelf) {
+    private companion object {
+        val paramPattern: Pattern = Pattern.compile("\\s*,\\s*(?=\\{)")
+    }
+
 
     constructor(bookUrl: String, finishOnDismiss: Boolean = false) : this() {
         arguments = Bundle().apply {
@@ -117,34 +121,31 @@ class AddToBookshelfDialog() : BaseDialogFragment(R.layout.dialog_add_to_bookshe
 //                } //onFragmentCreated的时候已经判断
                 val baseUrl = NetworkUtils.getBaseUrl(bookUrl)
                     ?: throw NoStackTraceException("书籍地址格式不对")
-                val urlMatcher = AnalyzeUrl.paramPattern.matcher(bookUrl)
+                val urlMatcher = paramPattern.matcher(bookUrl)
                 if (urlMatcher.find()) {
-                    val origin = GSON.fromJsonObject<AnalyzeUrl.UrlOption>(
-                        bookUrl.substring(urlMatcher.end())
-                    ).getOrNull()?.getOrigin()
+                    val origin = runCatching {
+                        JSONObject(bookUrl.substring(urlMatcher.end())).optString("origin")
+                    }.getOrNull()?.takeIf { it.isNotBlank() }
                     origin?.let {
                         val source = appDb.bookSourceDao.getBookSource(it)
                         source?.let {
-                            getBookInfo(bookUrl, source)?.let { book ->
-                                return@execute book
-                            }
+                            return@execute getBookInfo(bookUrl, source)
                         }
                     }
                 }
                 appDb.bookSourceDao.getBookSourceAddBook(baseUrl)?.let { source ->
-                    getBookInfo(bookUrl, source)?.let { book ->
-                        return@execute book
-                    }
+                    return@execute getBookInfo(bookUrl, source)
                 }
                 appDb.bookSourceDao.hasBookUrlPattern.forEach { source ->
-                    try {
-                        val bs = source.getBookSource()!!
-                        if (bookUrl.matches(bs.bookUrlPattern!!.toRegex())) {
-                            getBookInfo(bookUrl, bs)?.let { book ->
-                                return@execute book
-                            }
-                        }
+                    val bs = source.getBookSource() ?: return@forEach
+                    val pattern = bs.bookUrlPattern ?: return@forEach
+                    val matches = try {
+                        bookUrl.matches(pattern.toRegex())
                     } catch (_: Exception) {
+                        false
+                    }
+                    if (matches) {
+                        return@execute getBookInfo(bookUrl, bs)
                     }
                 }
                 throw NoStackTraceException("未找到匹配书源")
@@ -161,15 +162,21 @@ class AddToBookshelfDialog() : BaseDialogFragment(R.layout.dialog_add_to_bookshe
             }
         }
 
-        private suspend fun getBookInfo(bookUrl: String, source: BookSource): Book? {
-            return kotlin.runCatching {
+        private suspend fun getBookInfo(bookUrl: String, source: BookSource): Book {
+            return try {
                 val book = Book(
                     bookUrl = bookUrl,
                     origin = source.bookSourceUrl,
                     originName = source.bookSourceName
                 )
                 WebBook.getBookInfoAwait(source, book)
-            }.getOrNull()
+            } catch (error: Throwable) {
+                if (error is CancellationException) throw error
+                throw NoStackTraceException(
+                    "AddToBookshelf Rust detail failed for $bookUrl from ${source.bookSourceName}: " +
+                            (error.localizedMessage ?: error::class.java.name)
+                )
+            }
         }
 
         fun saveSearchBook(book: Book, success: () -> Unit) {

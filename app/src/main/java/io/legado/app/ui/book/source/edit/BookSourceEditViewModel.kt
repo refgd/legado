@@ -10,14 +10,13 @@ import io.legado.app.exception.NoStackTraceException
 import io.legado.app.help.ConcurrentRateLimiter.Companion.concurrentRecordMap
 import io.legado.app.help.RuleComplete
 import io.legado.app.help.config.SourceConfig
-import io.legado.app.help.http.CookieStore
-import io.legado.app.help.http.newCallStrResponse
-import io.legado.app.help.http.okHttpClient
 import io.legado.app.help.source.SourceHelp
 import io.legado.app.help.source.clearExploreKindsCache
 import io.legado.app.help.storage.ImportOldData
 import io.legado.app.model.SharedJsScope
+import io.legado.app.model.webBook.RustAnalyzerBridge
 import io.legado.app.utils.GSON
+import io.legado.app.utils.RustRemoteFetch
 import io.legado.app.utils.fromJsonArray
 import io.legado.app.utils.fromJsonObject
 import io.legado.app.utils.getClipText
@@ -112,8 +111,7 @@ class BookSourceEditViewModel(application: Application) : BaseViewModel(applicat
     suspend fun importSource(text: String): BookSource {
         return when {
             text.isAbsUrl() -> {
-                val text1 = okHttpClient.newCallStrResponse { url(text) }.body
-                importSource(text1!!)
+                importSource(RustRemoteFetch.text(text, "BookSourceEditViewModel.importSource"))
             }
 
             text.isJsonArray() -> {
@@ -141,7 +139,12 @@ class BookSourceEditViewModel(application: Application) : BaseViewModel(applicat
 
     fun clearCookie(url: String) {
         execute {
-            CookieStore.removeCookie(url)
+            val source = bookSource ?: BookSource(bookSourceUrl = url, bookSourceName = url)
+            RustAnalyzerBridge.evalJs(
+                source = source,
+                script = "cookie.removeCookie(${GSON.toJson(url)})",
+                rulePath = "BookSourceEditViewModel.clearCookie"
+            )
         }
     }
 

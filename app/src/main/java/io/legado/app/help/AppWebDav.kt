@@ -386,17 +386,17 @@ object AppWebDav {
      */
     suspend fun getBookProgress(book: Book): BookProgress? {
         val url = getProgressUrl(book.name, book.author)
-        kotlin.runCatching {
-            val authorization = authorization ?: return null
-            WebDav(url, authorization).download().let { byteArray ->
-                val json = String(byteArray)
-                if (json.isJson()) {
-                    return GSON.fromJsonObject<BookProgress>(json).getOrNull()
+        val authorization = authorization ?: return null
+        WebDav(url, authorization).download().let { byteArray ->
+            val json = String(byteArray)
+            if (json.isJson()) {
+                return GSON.fromJsonObject<BookProgress>(json).getOrElse {
+                    throw NoStackTraceException(
+                        "AppWebDav book progress JSON is invalid for Rust analyzer state handoff: " +
+                            (it.localizedMessage ?: it::class.java.name)
+                    )
                 }
             }
-        }.onFailure {
-            currentCoroutineContext().ensureActive()
-            AppLog.put("获取书籍进度失败\n${it.localizedMessage}", it)
         }
         return null
     }

@@ -1,6 +1,5 @@
 package io.legado.app.utils
 
-import io.legado.app.model.analyzeRule.AnalyzeUrl
 import java.net.URL
 import java.util.regex.Pattern
 
@@ -49,7 +48,7 @@ object HtmlFormatter {
                     NetworkUtils.getAbsoluteURL(
                         redirectUrl,
                         matcher.group(1)?.let {
-                            val urlMatcher = AnalyzeUrl.paramPattern.matcher(it)
+                            val urlMatcher = UrlOptions.paramPattern.matcher(it)
                             if (urlMatcher.find()) {
                                 param = ',' + it.substring(urlMatcher.end())
                                 it.substring(0, urlMatcher.start())

@@ -26,7 +26,7 @@ import io.legado.app.constant.AppPattern
 import io.legado.app.help.CoverThumbnailCache
 import io.legado.app.help.config.AppConfig
 import io.legado.app.help.glide.ImageLoader
-import io.legado.app.help.glide.OkHttpModelLoader
+import io.legado.app.help.glide.RustImageModelLoader
 import io.legado.app.help.storage.Restore
 import io.legado.app.lib.theme.accentColor
 import io.legado.app.model.BookCover
@@ -372,9 +372,9 @@ class CoverImageView @JvmOverloads constructor(
             var options = RequestOptions()
                 .format(DecodeFormat.PREFER_ARGB_8888)
                 .disallowHardwareConfig()
-                .set(OkHttpModelLoader.loadOnlyWifiOption, loadOnlyWifi)
+                .set(RustImageModelLoader.loadOnlyWifiOption, loadOnlyWifi)
             if (sourceOrigin != null) {
-                options = options.set(OkHttpModelLoader.sourceOriginOption, sourceOrigin)
+                options = options.set(RustImageModelLoader.sourceOriginOption, sourceOrigin)
             }
             val thumbFile = if (useThumb) CoverThumbnailCache.existing(context, thumbKey) else null
             var builder = if (thumbFile != null) {

@@ -30,7 +30,7 @@ data class RssSource(
     var variableComment: String? = null,
     // js库
     override var jsLib: String? = null,
-    // 启用okhttp CookieJAr 自动保存每次请求的cookie
+    // 启用 Rust 请求自动保存每次请求的 cookie
     @ColumnInfo(defaultValue = "0")
     override var enabledCookieJar: Boolean? = true,
     /**并发率**/

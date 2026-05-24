@@ -2,7 +2,6 @@ package io.legado.app.ui.login
 
 import android.app.Application
 import android.content.Intent
-import com.script.rhino.runScriptWithContext
 import io.legado.app.base.BaseViewModel
 import io.legado.app.constant.AppLog
 import io.legado.app.constant.BookType
@@ -64,9 +63,7 @@ class SourceLoginViewModel(application: Application) : BaseViewModel(application
                     }
                 }
             }
-            headerMap = runScriptWithContext {
-                source?.getHeaderMap(true) ?: emptyMap()
-            }
+            headerMap = resolveLoginHeaderMapByRust(source)
             source?.let{ loginInfo = it.getLoginInfoMap() }
             source
         }.onSuccess {
@@ -81,4 +78,8 @@ class SourceLoginViewModel(application: Application) : BaseViewModel(application
         }
     }
 
+}
+
+fun resolveLoginHeaderMapByRust(source: BaseSource?): Map<String, String> {
+    return source?.getHeaderMap(true) ?: emptyMap()
 }

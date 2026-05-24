@@ -1,12 +1,13 @@
 package io.legado.app.ui.main.rss
 
 import android.app.Application
-import com.script.rhino.runScriptWithContext
 import io.legado.app.base.BaseViewModel
 import io.legado.app.data.appDb
 import io.legado.app.data.entities.RssSource
+import io.legado.app.exception.NoStackTraceException
 import io.legado.app.help.source.SourceHelp
 import io.legado.app.help.source.removeSortCache
+import io.legado.app.ui.rss.read.resolveStartHtmlByRustEval
 import io.legado.app.utils.toastOnUi
 
 class RssViewModel(application: Application) : BaseViewModel(application) {
@@ -78,9 +79,10 @@ class RssViewModel(application: Application) : BaseViewModel(application) {
                     } else {
                         sortUrl.substring(4, sortUrl.lastIndexOf("<"))
                     }
-                    val result = runScriptWithContext {
-                        rssSource.evalJS(jsStr)?.toString()
-                    }
+                    val result = rssSource.evalJS(jsStr)?.toString()
+                        ?: throw NoStackTraceException(
+                            "${rssSource.getTag()} Rust RSS sortUrl JavaScript returned no result"
+                        )
                     if (!result.isNullOrBlank()) {
                         sortUrl = result
                     }
@@ -107,18 +109,7 @@ class RssViewModel(application: Application) : BaseViewModel(application) {
         onError: ((Throwable) -> Unit)? = null
     ) {
         execute {
-            val startHtml = rssSource.startHtml ?: return@execute null
-            return@execute when {
-                startHtml.startsWith("@js:") -> runScriptWithContext {
-                    rssSource.evalJS(startHtml.substring(4)).toString()
-                }
-
-                startHtml.startsWith("<js>") -> runScriptWithContext {
-                    rssSource.evalJS(startHtml.substring(4, startHtml.lastIndexOf("<"))).toString()
-                }
-
-                else -> startHtml
-            }
+            return@execute rssSource.resolveStartHtmlByRustEval()
         }.timeout(10000)
             .onSuccess {
                 if (it.isNullOrBlank()) {

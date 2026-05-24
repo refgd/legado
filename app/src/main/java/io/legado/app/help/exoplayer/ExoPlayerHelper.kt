@@ -5,6 +5,7 @@ import android.content.Context
 import android.net.Uri
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
+import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.database.StandaloneDatabaseProvider
 import androidx.media3.datasource.FileDataSource
 import androidx.media3.datasource.ResolvingDataSource
@@ -14,7 +15,6 @@ import androidx.media3.datasource.cache.CacheDataSource
 import androidx.media3.datasource.cache.ContentMetadata
 import androidx.media3.datasource.cache.LeastRecentlyUsedCacheEvictor
 import androidx.media3.datasource.cache.SimpleCache
-import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.offline.DefaultDownloaderFactory
@@ -25,16 +25,13 @@ import androidx.media3.exoplayer.source.MediaSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.extractor.DefaultExtractorsFactory
 import com.google.gson.reflect.TypeToken
-import io.legado.app.help.http.okHttpClient
 import io.legado.app.utils.GSON
 import io.legado.app.utils.MD5Utils
 import io.legado.app.utils.externalCache
 import io.legado.app.utils.fromJsonArray
 import io.legado.app.utils.isJsonArray
-import okhttp3.CacheControl
 import splitties.init.appCtx
 import java.io.File
-import java.util.concurrent.TimeUnit
 
 
 @Suppress("unused")
@@ -42,6 +39,7 @@ import java.util.concurrent.TimeUnit
 object ExoPlayerHelper {
 
     private const val SPLIT_TAG = "\uD83D\uDEA7"
+    private const val DEFAULT_CACHE_CONTROL = "max-age=86400"
 
     private val mapType by lazy {
         object : TypeToken<Map<String, String>>() {}.type
@@ -85,7 +83,7 @@ object ExoPlayerHelper {
                 res = res.withUri(Uri.parse(url))
                 try {
                     val headers: Map<String, String> = GSON.fromJson(urls[1], mapType)
-                    okhttpDataFactory.setDefaultRequestProperties(headers)
+                    mediaHttpDataFactory.setDefaultRequestProperties(exoPlayerRequestHeaders(headers))
                 } catch (_: Exception) {
                 }
             }
@@ -103,7 +101,7 @@ object ExoPlayerHelper {
         //使用自定义的CacheDataSource以支持设置UA
         CacheDataSource.Factory()
             .setCache(cache)
-            .setUpstreamDataSourceFactory(okhttpDataFactory)
+            .setUpstreamDataSourceFactory(mediaHttpDataFactory)
             .setCacheReadDataSourceFactory(FileDataSource.Factory())
             .setCacheWriteDataSinkFactory(
                 CacheDataSink.Factory()
@@ -130,7 +128,7 @@ object ExoPlayerHelper {
     private val audioCacheDataSourceFactory by lazy {
         CacheDataSource.Factory()
             .setCache(audioCache)
-            .setUpstreamDataSourceFactory(okhttpDataFactory)
+            .setUpstreamDataSourceFactory(mediaHttpDataFactory)
             .setCacheReadDataSourceFactory(FileDataSource.Factory())
             .setCacheWriteDataSinkFactory(
                 CacheDataSink.Factory()
@@ -142,7 +140,7 @@ object ExoPlayerHelper {
     private val audioReadDataSourceFactory by lazy {
         CacheDataSource.Factory()
             .setCache(audioCache)
-            .setUpstreamDataSourceFactory(okhttpDataFactory)
+            .setUpstreamDataSourceFactory(mediaHttpDataFactory)
             .setCacheReadDataSourceFactory(FileDataSource.Factory())
             .setCacheWriteDataSinkFactory(null)
     }
@@ -150,7 +148,7 @@ object ExoPlayerHelper {
     private fun offlineMediaDataSourceFactory(headers: Map<String, String>): CacheDataSource.Factory {
         return CacheDataSource.Factory()
             .setCache(audioCache)
-            .setUpstreamDataSourceFactory(okhttpDataFactory(headers))
+            .setUpstreamDataSourceFactory(mediaHttpDataFactory(headers))
             .setCacheReadDataSourceFactory(FileDataSource.Factory())
             .setCacheWriteDataSinkFactory(
                 CacheDataSink.Factory()
@@ -160,23 +158,18 @@ object ExoPlayerHelper {
     }
 
     /**
-     * Okhttp DataSource.Factory
+     * Media HTTP DataSource.Factory
      */
-    private val okhttpDataFactory by lazy {
-        val client = okHttpClient.newBuilder()
-            .callTimeout(0, TimeUnit.SECONDS)
-            .build()
-        OkHttpDataSource.Factory(client)
-            .setCacheControl(CacheControl.Builder().maxAge(1, TimeUnit.DAYS).build())
+    private val mediaHttpDataFactory by lazy {
+        DefaultHttpDataSource.Factory()
+            .setDefaultRequestProperties(exoPlayerRequestHeaders())
+            .setAllowCrossProtocolRedirects(true)
     }
 
-    private fun okhttpDataFactory(headers: Map<String, String>): OkHttpDataSource.Factory {
-        val client = okHttpClient.newBuilder()
-            .callTimeout(0, TimeUnit.SECONDS)
-            .build()
-        return OkHttpDataSource.Factory(client)
-            .setCacheControl(CacheControl.Builder().maxAge(1, TimeUnit.DAYS).build())
-            .setDefaultRequestProperties(headers)
+    private fun mediaHttpDataFactory(headers: Map<String, String>): DefaultHttpDataSource.Factory {
+        return DefaultHttpDataSource.Factory()
+            .setDefaultRequestProperties(exoPlayerRequestHeaders(headers))
+            .setAllowCrossProtocolRedirects(true)
     }
 
     /**
@@ -217,7 +210,7 @@ object ExoPlayerHelper {
 //        val declaredField = this.javaClass.getDeclaredField("upstreamDataSourceFactory")
 //        declaredField.isAccessible = true
 //        val df = declaredField[this] as DataSource.Factory
-//        if (df is OkHttpDataSource.Factory) {
+//        if (df is DefaultHttpDataSource.Factory) {
 //            df.setDefaultRequestProperties(headers)
 //        }
 //        return this
@@ -225,7 +218,12 @@ object ExoPlayerHelper {
 
 
     fun getMediaSource(context: Context, url: String): MediaSource? {
-        val uris = GSON.fromJsonArray<String>(url).getOrNull() ?: return null
+        val uris = GSON.fromJsonArray<String>(url).getOrElse {
+            throw IllegalArgumentException(
+                "ExoPlayerHelper media source URL array JSON is invalid for Rust analyzer handoff: " +
+                    (it.localizedMessage ?: it::class.java.name)
+            )
+        }
         if (uris.isEmpty()) return null
         val mediaSourceBuilder = ConcatenatingMediaSource2.Builder()
         for (uri in uris) {
@@ -338,9 +336,13 @@ object ExoPlayerHelper {
 
     private fun getMediaUrls(url: String): List<String> {
         if (url.isJsonArray()) {
-            GSON.fromJsonArray<String>(url).getOrNull()?.filter { it.isNotBlank() }?.let {
-                return it
+            return GSON.fromJsonArray<String>(url).getOrElse {
+                throw IllegalArgumentException(
+                    "ExoPlayerHelper media URL list JSON is invalid for Rust analyzer handoff: " +
+                        (it.localizedMessage ?: it::class.java.name)
+                )
             }
+                .filter { it.isNotBlank() }
         }
         return listOf(url)
     }
@@ -371,6 +373,12 @@ object ExoPlayerHelper {
         val url: String,
         val headers: Map<String, String> = emptyMap()
     )
+
+    internal fun exoPlayerRequestHeaders(headers: Map<String, String> = emptyMap()): Map<String, String> {
+        return linkedMapOf("Cache-Control" to DEFAULT_CACHE_CONTROL).apply {
+            putAll(headers)
+        }
+    }
 
     private const val AUDIO_OFFLINE_CACHE_MAX_BYTES = 4L * 1024 * 1024 * 1024
     private const val COMPLETE_MARKER_VERSION = "media_downloader_v2"

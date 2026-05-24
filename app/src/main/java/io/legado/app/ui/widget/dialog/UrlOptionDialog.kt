@@ -8,8 +8,8 @@ import io.legado.app.R
 import io.legado.app.constant.AppConst
 import io.legado.app.databinding.DialogUrlOptionEditBinding
 import io.legado.app.lib.theme.dialogSurfaceBackground
-import io.legado.app.model.analyzeRule.AnalyzeUrl
 import io.legado.app.utils.GSON
+import io.legado.app.utils.UrlOption
 import io.legado.app.utils.setLayout
 
 class UrlOptionDialog(context: Context, private val success: (String) -> Unit) : Dialog(context) {
@@ -36,8 +36,8 @@ class UrlOptionDialog(context: Context, private val success: (String) -> Unit) :
         }
     }
 
-    private fun getUrlOption(): AnalyzeUrl.UrlOption {
-        val urlOption = AnalyzeUrl.UrlOption()
+    private fun getUrlOption(): UrlOption {
+        val urlOption = UrlOption()
         urlOption.useWebView(binding.cbUseWebView.isChecked)
         urlOption.setMethod(binding.editMethod.text.toString())
         urlOption.setCharset(binding.editCharset.text.toString())

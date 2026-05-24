@@ -3,8 +3,6 @@ package io.legado.app.data.entities
 import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.Ignore
-import io.legado.app.utils.GSON
-import io.legado.app.utils.fromJsonObject
 import kotlinx.parcelize.IgnoredOnParcel
 
 @Entity(
@@ -44,7 +42,7 @@ data class RssArticle(
     @delegate:Ignore
     @IgnoredOnParcel
     override val variableMap: HashMap<String, String> by lazy {
-        GSON.fromJsonObject<HashMap<String, String>>(variable).getOrNull() ?: hashMapOf()
+        parseVariableMap("RssArticle($origin/$link)", variable)
     }
 
     fun toStar() = RssStar(

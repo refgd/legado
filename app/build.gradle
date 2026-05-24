@@ -11,7 +11,6 @@ plugins {
     alias libs.plugins.room
     alias libs.plugins.ksp
 }
-apply from: 'download.gradle'
 
 static def releaseTime() {
     return new Date().format("yy.MMddHH", TimeZone.getTimeZone("GMT+8"))
@@ -27,6 +26,25 @@ def gitCommits = providers.exec {
 def buildVersionCode = project.hasProperty("VERSION_CODE")
         ? project.property("VERSION_CODE").toString().toInteger()
         : 10000 + gitCommits.get()
+def repoRootDir = rootProject.projectDir.parentFile.parentFile
+
+def signingPropsFile = rootProject.file("keystore/sign.properties")
+def signingProps = new Properties()
+if (signingPropsFile.exists()) {
+    signingPropsFile.withInputStream { signingProps.load(it) }
+}
+def signingValue = { String gradleName, String propName ->
+    def value = project.findProperty(gradleName) ?: signingProps.getProperty(propName)
+    value == null || value.toString().trim().isEmpty() ? null : value.toString().trim()
+}
+def releaseStoreFileValue = signingValue("RELEASE_STORE_FILE", "storeFile")
+def releaseStoreFile = releaseStoreFileValue == null
+        ? null
+        : new File(releaseStoreFileValue).with { it.isAbsolute() ? it : new File(signingPropsFile.parentFile, releaseStoreFileValue) }
+def releaseStorePassword = signingValue("RELEASE_STORE_PASSWORD", "storePassword")
+def releaseKeyAlias = signingValue("RELEASE_KEY_ALIAS", "keyAlias")
+def releaseKeyPassword = signingValue("RELEASE_KEY_PASSWORD", "keyPassword")
+def hasReleaseSigning = releaseStoreFile != null && releaseStorePassword != null && releaseKeyAlias != null && releaseKeyPassword != null
 
 android {
     compileSdk = compile_sdk_version
@@ -38,12 +56,12 @@ android {
     }
 
     signingConfigs {
-        if (project.hasProperty("RELEASE_STORE_FILE")) {
+        if (hasReleaseSigning) {
             myConfig {
-                storeFile file(RELEASE_STORE_FILE)
-                storePassword RELEASE_STORE_PASSWORD
-                keyAlias RELEASE_KEY_ALIAS
-                keyPassword RELEASE_KEY_PASSWORD
+                storeFile releaseStoreFile
+                storePassword releaseStorePassword
+                keyAlias releaseKeyAlias
+                keyPassword releaseKeyPassword
                 enableV1Signing = true
                 enableV2Signing = true
                 enableV3Signing = true
@@ -60,8 +78,7 @@ android {
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         project.ext.set("archivesBaseName", name + "_" + version)
 
-        buildConfigField "String", "Cronet_Version", "\"$CronetVersion\""
-        buildConfigField "String", "Cronet_Main_Version", "\"$CronetMainVersion\""
+        buildConfigField "boolean", "BUILD_RUST_UNIFFI", "true"
 
         if (project.hasProperty("abi")) {
             ndk {
@@ -85,21 +102,21 @@ android {
     }
     buildTypes {
         release {
-            if (project.hasProperty("RELEASE_STORE_FILE")) {
+            if (hasReleaseSigning) {
                 signingConfig signingConfigs.myConfig
             }
-            applicationIdSuffix '.refgd'
+            applicationIdSuffix '.refgd_rust'
             manifestPlaceholders.put("app_name", "@string/app_name")
 
             minifyEnabled false
             shrinkResources = false
-            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro', 'cronet-proguard-rules.pro'
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
         beta {
-            if (project.hasProperty("RELEASE_STORE_FILE")) {
+            if (hasReleaseSigning) {
                 signingConfig signingConfigs.myConfig
             }
-            applicationIdSuffix '.refgd'
+            applicationIdSuffix '.refgd_rust'
             versionNameSuffix '.beta'
             manifestPlaceholders.put("app_name", "@string/app_name")
 
@@ -107,10 +124,10 @@ android {
 
             minifyEnabled false
             shrinkResources = false
-            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro', 'cronet-proguard-rules.pro'
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
         debug {
-            if (project.hasProperty("RELEASE_STORE_FILE")) {
+            if (hasReleaseSigning) {
                 signingConfig signingConfigs.myConfig
             }
             manifestPlaceholders.put("app_name", "@string/app_name")
@@ -118,7 +135,7 @@ android {
             applicationIdSuffix '.debug'
             versionNameSuffix 'debug'
             minifyEnabled false
-            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro', 'cronet-proguard-rules.pro'
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
     }
     //noinspection GrDeprecatedAPIUsage
@@ -176,6 +193,10 @@ android {
     sourceSets {
         // Adds exported schema location as test app assets.
         androidTest.assets.srcDirs += files("$projectDir/schemas".toString())
+        androidTest.assets.srcDirs += files(new File(repoRootDir, "sources"))
+        androidTest.assets.srcDirs += files(new File(repoRootDir, ".legado-cli"))
+        main.java.srcDirs += files("$projectDir/src/rustUniFfi/java")
+        main.jniLibs.srcDirs += files("$projectDir/src/main/jniLibs")
     }
     tasks.withType(JavaCompile).tap {
         configureEach {
@@ -192,6 +213,24 @@ android {
         }
     }
 }
+
+def rustArtifactAbi = providers.gradleProperty("abi").getOrElse("arm64-v8a")
+tasks.register("checkRustUniFfiArtifacts") {
+    doLast {
+        def bindingFile = file("$projectDir/src/rustUniFfi/java/io/legado/app/rust/legado_native.kt")
+        def jniLib = file("$projectDir/src/main/jniLibs/${rustArtifactAbi}/liblegado_uniffi.so")
+        if (!bindingFile.exists()) {
+            throw new GradleException("Missing Rust UniFFI Kotlin binding: ${bindingFile}. Run repository-root ./build.sh or sync Rust artifacts before building Android.")
+        }
+        if (!jniLib.exists()) {
+            throw new GradleException("Missing Rust UniFFI native library for ABI ${rustArtifactAbi}: ${jniLib}. Run repository-root ./build.sh or sync Rust artifacts before building Android.")
+        }
+    }
+}
+tasks.matching { it.name == "preBuild" }.configureEach {
+    dependsOn("checkRustUniFfiArtifacts")
+}
+
 
 dependencies {
     //compileOnly "com.android.tools.build:gradle:$agp_version"
@@ -246,8 +285,6 @@ dependencies {
     implementation(libs.media3.exoplayer)
     //implementation(libs.media3.exoplayer.hls)
     //implementation(libs.media3.ui)
-    // For loading data using the OkHttp network stack
-    implementation(libs.media3.datasource.okhttp)
     // For exposing and controlling media sessions
     //implementation "androidx.media3:media3-session:$media3_version"
 
@@ -273,22 +310,13 @@ dependencies {
     implementation(libs.liveeventbus)
 
     //规则相关
-    implementation(libs.jsoup)
     implementation(libs.json.path)
-    implementation(libs.jsoupxpath)
+    implementation("net.java.dev.jna:jna:${libs.versions.jna.get()}@aar")
     implementation(project(path: ':modules:book'))
-    implementation(project(path: ':modules:rhino'))
-
-    //JS rhino
-
-    //网络
-    implementation(libs.okhttp)
-    implementation(fileTree(dir: 'cronetlib', include: ['*.jar', '*.aar']))
     implementation(libs.protobuf.javalite)
 
     //Glide
     implementation(libs.glide.glide)
-    implementation(libs.glide.okhttp)
     ksp(libs.glide.ksp)
 
     //Svg
@@ -299,6 +327,7 @@ dependencies {
     //webServer
     implementation(libs.nanohttpd.nanohttpd)
     implementation(libs.nanohttpd.websocket)
+    implementation(libs.okio)
 
     //二维码
     //noinspection GradleDependency

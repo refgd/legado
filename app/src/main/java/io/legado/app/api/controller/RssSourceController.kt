@@ -25,7 +25,9 @@ object RssSourceController {
         val returnData = ReturnData()
         postData ?: return returnData.setErrorMsg("数据不能为空")
         GSON.fromJsonObject<RssSource>(postData).onFailure {
-            returnData.setErrorMsg("转换源失败${it.localizedMessage}")
+            returnData.setErrorMsg(
+                "RssSourceController.saveSource JSON is invalid for Rust analyzer handoff: ${it.localizedMessage}"
+            )
         }.onSuccess { source ->
             if (TextUtils.isEmpty(source.sourceName) || TextUtils.isEmpty(source.sourceUrl)) {
                 returnData.setErrorMsg("源名称和URL不能为空")
@@ -40,13 +42,19 @@ object RssSourceController {
     fun saveSources(postData: String?): ReturnData {
         postData ?: return ReturnData().setErrorMsg("数据不能为空")
         val okSources = arrayListOf<RssSource>()
-        val source = GSON.fromJsonArray<RssSource>(postData).getOrNull()
-        if (source.isNullOrEmpty()) {
-            return ReturnData().setErrorMsg("转换源失败")
+        val source = GSON.fromJsonArray<RssSource>(postData).getOrElse {
+            return ReturnData().setErrorMsg(
+                "RssSourceController.saveSources JSON is invalid for Rust analyzer handoff: ${it.localizedMessage}"
+            )
         }
-        for (rssSource in source) {
+        if (source.isEmpty()) {
+            return ReturnData().setErrorMsg("源列表不能为空")
+        }
+        for ((index, rssSource) in source.withIndex()) {
             if (rssSource.sourceName.isBlank() || rssSource.sourceUrl.isBlank()) {
-                continue
+                return ReturnData().setErrorMsg(
+                    "RssSourceController.saveSources item $index is invalid for Rust analyzer handoff: source name and URL are required"
+                )
             }
             appDb.rssSourceDao.insert(rssSource)
             okSources.add(rssSource)
@@ -66,12 +74,13 @@ object RssSourceController {
     }
 
     fun deleteSources(postData: String?): ReturnData {
-        postData ?: return ReturnData().setErrorMsg("没有传递数据")
-        GSON.fromJsonArray<RssSource>(postData).onFailure {
-            return ReturnData().setErrorMsg("格式不对")
-        }.onSuccess {
-            SourceHelp.deleteRssSources(it)
+        postData ?: return ReturnData().setErrorMsg("数据不能为空")
+        val sources = GSON.fromJsonArray<RssSource>(postData).getOrElse {
+            return ReturnData().setErrorMsg(
+                "RssSourceController.deleteSources JSON is invalid for Rust analyzer handoff: ${it.localizedMessage}"
+            )
         }
+        SourceHelp.deleteRssSources(sources)
         return ReturnData().setData("已执行"/*okSources*/)
     }
 }

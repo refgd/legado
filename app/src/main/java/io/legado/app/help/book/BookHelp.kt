@@ -3,7 +3,6 @@ package io.legado.app.help.book
 import android.graphics.BitmapFactory
 import android.os.ParcelFileDescriptor
 import androidx.documentfile.provider.DocumentFile
-import com.script.rhino.runScriptWithContext
 import io.legado.app.constant.AppLog
 import io.legado.app.constant.AppPattern
 import io.legado.app.constant.EventBus
@@ -12,9 +11,9 @@ import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookChapter
 import io.legado.app.data.entities.BookSource
 import io.legado.app.help.config.AppConfig
-import io.legado.app.model.analyzeRule.AnalyzeUrl
 import io.legado.app.model.localBook.EpubFile
 import io.legado.app.model.localBook.LocalBook
+import io.legado.app.model.webBook.RustAnalyzerBridge
 import io.legado.app.utils.ArchiveUtils
 import io.legado.app.utils.FileUtils
 import io.legado.app.utils.ImageUtils
@@ -240,16 +239,13 @@ object BookHelp {
             if (isImageExist(book, src)) {
                 return
             }
-            val analyzeUrl = AnalyzeUrl(
-                src, source = bookSource, coroutineContext = currentCoroutineContext()
-            )
-            val bytes = analyzeUrl.getByteArrayAwait()
+            val bytes = bookSource?.let {
+                RustAnalyzerBridge.fetchRaw(it, src, "BookHelp.saveImage")
+            } ?: RustAnalyzerBridge.fetchRawUrl(src, "BookHelp.saveImage").body
             //某些图片被加密，需要进一步解密
-            runScriptWithContext {
-                ImageUtils.decode(
-                    src, bytes, isCover = false, bookSource, book
-                )
-            }?.let {
+            ImageUtils.decode(
+                src, bytes, isCover = false, bookSource, book
+            )?.let {
                 if (!checkImage(it)) {
                     // 如果部分图片失效，每次进入正文都会花很长时间再次获取图片数据
                     // 所以无论如何都要将数据写入到文件里

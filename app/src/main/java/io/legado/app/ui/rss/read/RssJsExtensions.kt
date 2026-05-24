@@ -3,7 +3,6 @@ package io.legado.app.ui.rss.read
 import android.webkit.JavascriptInterface
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
-import com.script.rhino.runScriptWithContext
 import io.legado.app.constant.BookType
 import io.legado.app.data.appDb
 import io.legado.app.data.entities.BaseSource
@@ -12,18 +11,19 @@ import io.legado.app.data.entities.BookChapter
 import io.legado.app.data.entities.BookSource
 import io.legado.app.data.entities.RssReadRecord
 import io.legado.app.data.entities.RssSource
+import io.legado.app.exception.NoStackTraceException
 import io.legado.app.help.JsExtensions
 import io.legado.app.model.AudioPlay
 import io.legado.app.model.ReadBook
 import io.legado.app.model.VideoPlay
-import io.legado.app.model.analyzeRule.AnalyzeRule
-import io.legado.app.model.analyzeRule.AnalyzeRule.Companion.setChapter
+import io.legado.app.model.webBook.RustAnalyzerBridge
 import io.legado.app.ui.association.AddToBookshelfDialog
 import io.legado.app.ui.book.explore.ExploreShowActivity
 import io.legado.app.ui.book.search.SearchActivity
 import io.legado.app.ui.login.SourceLoginActivity
 import io.legado.app.ui.rss.article.RssSortActivity
 import io.legado.app.ui.widget.dialog.PhotoDialog
+import io.legado.app.utils.GSON
 import io.legado.app.utils.isJsonObject
 import io.legado.app.utils.openUrl
 import io.legado.app.utils.showDialogFragment
@@ -36,6 +36,7 @@ import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.lang.ref.WeakReference
 import java.net.URL
+import kotlin.coroutines.CoroutineContext
 
 
 @Suppress("unused")
@@ -58,13 +59,28 @@ open class RssJsExtensions(
 
     @JavascriptInterface
     fun put(key: String, value: String): String {
-        getSource()?.put(key, value)
-        return value
+        val source = getSource() ?: rustTemporarySource()
+        return RustAnalyzerBridge.evalJs(
+            source = source,
+            script = "source.put(${GSON.toJson(key)}, ${GSON.toJson(value)})",
+            baseUrl = source.getKey(),
+            rulePath = "RssJsExtensions.put",
+            platformJava = this,
+            bindingsJson = rustBindingsJson()
+        )
     }
 
     @JavascriptInterface
     fun get(key: String): String {
-        return getSource()?.get(key) ?: ""
+        val source = getSource() ?: rustTemporarySource()
+        return RustAnalyzerBridge.evalJs(
+            source = source,
+            script = "source.get(${GSON.toJson(key)})",
+            baseUrl = source.getKey(),
+            rulePath = "RssJsExtensions.get",
+            platformJava = this,
+            bindingsJson = rustBindingsJson()
+        )
     }
 
     @JavascriptInterface
@@ -170,19 +186,7 @@ open class RssJsExtensions(
                             }
                             return@launch
                         }
-                        val startHtml = toSource.startHtml?.let {
-                            when {
-                                it.startsWith("@js:") -> runScriptWithContext {
-                                    toSource.evalJS(it.substring(4)).toString()
-                                }
-
-                                it.startsWith("<js>") -> runScriptWithContext {
-                                    toSource.evalJS(it.substring(4, it.lastIndexOf("<"))).toString()
-                                }
-
-                                else -> it
-                            }
-                        }
+                        val startHtml = toSource.resolveStartHtmlByRustEval()
                         if (startHtml.isNullOrBlank()) {
                             RssSortActivity.start(activity, null, sourceUrl)
                         } else {
@@ -244,7 +248,7 @@ open class RssJsExtensions(
         }
     }
 
-    /** AnalyzeRule实现 **/
+    /** Rust analyzer rule helpers exposed to WebView JS **/
     private val bookAndChapter by lazy {
         var book: Book? = null
         var chapter: BookChapter? = null
@@ -274,17 +278,28 @@ open class RssJsExtensions(
     private val chapter: BookChapter? get() = bookAndChapter.second
 
     val analyzeRule by lazy {
-        AnalyzeRule(book, source = getSource()).setChapter(chapter)
+        RssRustRuleBridge(this, ::getSource, book, chapter)
+    }
+
+    private fun rustBindingsJson(): String {
+        return GSON.toJson(mapOf("book" to book, "chapter" to chapter))
+    }
+
+    private fun rustTemporarySource(): BookSource {
+        return BookSource(
+            bookSourceUrl = getSource()?.getKey() ?: "legado://rss-js",
+            bookSourceName = getSource()?.getTag() ?: "RSS Rust JS"
+        )
     }
 
     @JavascriptInterface
     @JvmOverloads
-    fun setContent(content: Any?, baseUrl: String? = null): AnalyzeRule {
+    fun setContent(content: Any?, baseUrl: String? = null): RssRustRuleBridge {
         return analyzeRule.setContent(content, baseUrl)
     }
 
     @JavascriptInterface
-    fun setBaseUrl(baseUrl: String?): AnalyzeRule {
+    fun setBaseUrl(baseUrl: String?): RssRustRuleBridge {
         return analyzeRule.setBaseUrl(baseUrl)
     }
 
@@ -322,4 +337,156 @@ open class RssJsExtensions(
         title: String? = null,
         origin: String? = null
     ): Boolean = false
+}
+
+class RssRustRuleBridge(
+    private val platformJava: RssJsExtensions,
+    private val sourceProvider: () -> BaseSource?,
+    private val book: Book?,
+    private val chapter: BookChapter?
+) {
+    private var content: Any? = ""
+    private var baseUrl: String = sourceProvider()?.getKey().orEmpty()
+    private var redirectUrl: URL? = null
+
+    @JvmOverloads
+    fun setContent(content: Any?, baseUrl: String? = null): RssRustRuleBridge {
+        if (content == null) throw AssertionError("内容不可空（Content cannot be null）")
+        this.content = content
+        setBaseUrl(baseUrl)
+        return this
+    }
+
+    fun setBaseUrl(baseUrl: String?): RssRustRuleBridge {
+        baseUrl?.let {
+            this.baseUrl = it
+        }
+        return this
+    }
+
+    fun setRedirectUrl(url: String): URL? {
+        if (url.startsWith("data:", ignoreCase = true) || url.startsWith("data64:", ignoreCase = true)) {
+            return redirectUrl
+        }
+        redirectUrl = runCatching { URL(url) }.getOrElse {
+            throw NoStackTraceException(
+                "RssJsExtensions.setRedirectUrl received invalid URL from Rust analyzer JS: $url"
+            )
+        }
+        return redirectUrl
+    }
+
+    fun setCoroutineContext(@Suppress("UNUSED_PARAMETER") context: CoroutineContext): RssRustRuleBridge {
+        return this
+    }
+
+    fun evalJS(jsStr: String, result: Any? = null): Any? {
+        val source = sourceProvider() ?: temporarySource()
+        return RustAnalyzerBridge.evalJsAny(
+            source = source,
+            script = "java.setContent(src, baseUrl);\n$jsStr",
+            result = result,
+            baseUrl = baseUrl.ifBlank { source.getKey() },
+            rulePath = "RssJsExtensions.evalJS",
+            platformJava = platformJava,
+            bindingsJson = bindingsJson()
+        )
+    }
+
+    @JvmOverloads
+    fun getStringList(rule: String?, mContent: Any? = null, isUrl: Boolean = false): List<String>? {
+        rule ?: return null
+        val value = getString(rule, mContent, isUrl)
+        if (value.isBlank()) return emptyList()
+        return value.split('\n').filter { it.isNotBlank() }
+    }
+
+    @JvmOverloads
+    fun getString(ruleStr: String?, mContent: Any? = null, isUrl: Boolean = false): String {
+        val rule = ruleStr.orEmpty()
+        if (rule.isBlank()) return ""
+        val source = sourceProvider() ?: temporarySource()
+        return RustAnalyzerBridge.evalRule(
+            source = source,
+            rule = rule,
+            result = mContent ?: content,
+            baseUrl = baseUrl.ifBlank { source.getKey() },
+            rulePath = "RssJsExtensions.getString",
+            platformJava = platformJava,
+            bindingsJson = bindingsJson()
+        ).let { value ->
+            if (isUrl) {
+                RustAnalyzerBridge.resolveUrl(
+                    url = value,
+                    source = source,
+                    baseUrl = baseUrl.ifBlank { source.getKey() },
+                    rulePath = "RssJsExtensions.getString.url"
+                ).url
+            } else {
+                value
+            }
+        }
+    }
+
+    fun getString(ruleStr: String?, @Suppress("UNUSED_PARAMETER") unescape: Boolean): String {
+        return getString(ruleStr)
+    }
+
+    fun getElement(ruleStr: String): Any? {
+        return getElements(ruleStr).firstOrNull()
+    }
+
+    fun getElements(ruleStr: String): List<Any> {
+        val source = sourceProvider() ?: temporarySource()
+        val script = """
+            java.setContent(result, baseUrl);
+            var list = java.getElements(rule);
+            Array.prototype.map.call(list, function(item) { return String(item); });
+        """.trimIndent()
+        return when (val value = RustAnalyzerBridge.evalJsAny(
+            source = source,
+            script = script,
+            result = content,
+            baseUrl = baseUrl.ifBlank { source.getKey() },
+            rulePath = "RssJsExtensions.getElements",
+            platformJava = platformJava,
+            bindingsJson = GSON.toJson(
+                mapOf(
+                    "rule" to ruleStr,
+                    "book" to book,
+                    "chapter" to chapter
+                )
+            )
+        )) {
+            is List<*> -> value.filterNotNull()
+            null -> emptyList()
+            else -> listOf(value)
+        }
+    }
+
+    private fun bindingsJson(): String {
+        return GSON.toJson(
+            mapOf(
+                "book" to book,
+                "chapter" to chapter,
+                "src" to content
+            )
+        )
+    }
+
+    private fun temporarySource(): BookSource {
+        return BookSource(
+            bookSourceUrl = baseUrl.ifBlank { "legado://rss-rule" },
+            bookSourceName = "RSS Rust rule"
+        )
+    }
+}
+
+fun RssSource.resolveStartHtmlByRustEval(): String? {
+    val startHtml = startHtml ?: return null
+    return when {
+        startHtml.startsWith("@js:") -> evalJS(startHtml.substring(4)).toString()
+        startHtml.startsWith("<js>") -> evalJS(startHtml.substring(4, startHtml.lastIndexOf("<"))).toString()
+        else -> startHtml
+    }
 }

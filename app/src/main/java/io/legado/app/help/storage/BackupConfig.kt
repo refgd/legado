@@ -2,6 +2,7 @@ package io.legado.app.help.storage
 
 import io.legado.app.R
 import io.legado.app.constant.PreferKey
+import io.legado.app.exception.NoStackTraceException
 import io.legado.app.utils.FileUtils
 import io.legado.app.utils.GSON
 import io.legado.app.utils.fromJsonObject
@@ -17,7 +18,16 @@ object BackupConfig {
     val ignoreConfig: HashMap<String, Boolean> by lazy {
         val file = FileUtils.createFileIfNotExist(ignoreConfigPath)
         val json = file.readText()
-        GSON.fromJsonObject<HashMap<String, Boolean>>(json).getOrNull() ?: hashMapOf()
+        if (json.isBlank()) {
+            hashMapOf()
+        } else {
+            GSON.fromJsonObject<HashMap<String, Boolean>>(json).getOrElse {
+                throw NoStackTraceException(
+                    "Backup restore-ignore JSON is invalid for Rust analyzer state handoff: " +
+                        (it.localizedMessage ?: it::class.java.name)
+                )
+            }
+        }
     }
 
     private const val readConfigKey = "readConfig"

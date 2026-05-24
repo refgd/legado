@@ -1,111 +1,20 @@
 # [English](English.md) [中文](README.md)
 
-<a href="https://jb.gg/OpenSourceSupport" target="_blank">
-<img width="24" height="24" src="https://resources.jetbrains.com/storage/products/company/brand/logos/jb_beam.svg?_gl=1*135yekd*_ga*OTY4Mjg4NDYzLjE2Mzk0NTE3MzQ.*_ga_9J976DJZ68*MTY2OTE2MzM5Ny4xMy4wLjE2NjkxNjMzOTcuNjAuMC4w&_ga=2.257292110.451256242.1669085120-968288463.1639451734" alt="idea"/>
-</a>
-
 <div align="center">
-<img width="125" height="125" src="docs/archive_icon.svg" alt="阅读R"/>
+<img width="125" height="125" src="docs/archive_icon.svg" alt="阅读RU"/>
 <br>
-阅读R
+阅读RU
 <br>
-阅读R继承自 Rimchars 维护的 Legado 分支，并延续 <a href="https://github.com/gedoor/legado" target="_blank">Legado</a> 的开源阅读体验，在其基础上继续增强界面、AI、EPUB、漫画、视频和主题能力。
+阅读RU继承自 阅读R 的 own 分支，并延续 <a href="https://github.com/gedoor/legado" target="_blank">Legado</a> 的开源阅读体验，在其基础上继续增强界面、AI、EPUB、漫画、视频和主题能力。
 </div>
 
-## 阅读R特色
-- 重做主题管理，支持日间/夜间主题、背景图、界面颜色、主题导入导出和云端同步。
-- 深化 EPUB 原生阅读，持续补全图片、注解、分页缓存、复杂样式和大文件导入体验。
-- 增强 AI 助手，支持工具调用、书源搜索、书籍与章节读取、阅读记录查询和联网搜索。
-- 优化发现页与订阅源页，支持统一源选择、订阅内容搜索、纯 URL 订阅源和合并入口。
-- 改进漫画和视频体验，强化漫画阅读控件、视频直达播放页和详情/目录信息展示。
+## 阅读RU特色
+Rust 版功能与普通版一致，兼容所有书源和配置。该版本使用 Rust 重写并优化了底层解析、网络等模块，部分场景下解析速度提升明显。例如「光遇源」600 余章目录解析，平均耗时由约 7 秒降低至约 1 秒。
 
-## 版本说明
-- 测试版(beta)：包名与原版相同，可覆盖更新，版本更新频繁
-- 正式版(plus)：新的共存包名，安装后是一个新软件，不会覆盖原版，每到一个稳定阶段进行一次更新
-#### 找不到下载地址可以去这里 [下载软件](https://github.com/refgd/legado/releases)
-
-[![](https://img.shields.io/badge/-Contents:-696969.svg)](#contents) [![](https://img.shields.io/badge/-Function-F5F5F5.svg)](#Function-主要功能-) [![](https://img.shields.io/badge/-Community-F5F5F5.svg)](#Community-交流社区-) [![](https://img.shields.io/badge/-API-F5F5F5.svg)](#API-) [![](https://img.shields.io/badge/-Other-F5F5F5.svg)](#Other-其他-) [![](https://img.shields.io/badge/-Grateful-F5F5F5.svg)](#Grateful-感谢-) [![](https://img.shields.io/badge/-Interface-F5F5F5.svg)](#Interface-界面-)
-
->新用户？
->
->软件不提供内容，需要您自己手动添加，例如导入书源等。
->看看 [官方帮助文档](https://www.yuque.com/legado/wiki)，也许里面就有你要的答案。
-
-# Function-主要功能 [![](https://img.shields.io/badge/-Function-F5F5F5.svg)](#Function-主要功能-)
-[English](English.md)
-
-<details><summary>中文</summary>
-1.自定义书源，自己设置规则，抓取网页数据，规则简单易懂，软件内有规则说明。<br>
-2.列表书架，网格书架自由切换。<br>
-3.书源规则支持搜索及发现，所有找书看书功能全部自定义，找书更方便。<br>
-4.订阅内容,可以订阅想看的任何内容,看你想看<br>
-5.支持替换净化，去除广告替换内容很方便。<br>
-6.支持本地TXT、EPUB阅读，手动浏览，智能扫描。<br>
-7.支持高度自定义阅读界面，切换字体、颜色、背景、行距、段距、加粗、简繁转换等。<br>
-8.支持多种翻页模式，覆盖、仿真、滑动、滚动等。<br>
-9.软件开源，持续优化，无广告。
-</details>
-
-<a href="#readme">
-    <img src="https://img.shields.io/badge/-返回顶部-orange.svg" alt="#" align="right">
-</a>
-
-# Community-交流社区 [![](https://img.shields.io/badge/-Community-F5F5F5.svg)](#Community-交流社区-)
-
-#### Telegram
-[![Telegram-channel](https://img.shields.io/badge/Σ_Telegram-%E9%A2%91%E9%81%93-blue)](https://t.me/yuedur)
-
-
-<a href="#readme">
-    <img src="https://img.shields.io/badge/-返回顶部-orange.svg" alt="#" align="right">
-</a>
-
-# API [![](https://img.shields.io/badge/-API-F5F5F5.svg)](#API-)
-* 阅读3.0 提供了2种方式的API：`Web方式`和`Content Provider方式`。您可以在[这里](api.md)根据需要自行调用。 
-* 可通过url唤起阅读进行一键导入,url格式: legado://import/{path}?src={url}
-* path类型: bookSource,rssSource,replaceRule,textTocRule,httpTTS,theme,readConfig,dictRule,[addToBookshelf](/app/src/main/java/io/legado/app/ui/association/AddToBookshelfDialog.kt)
-* path类型解释: 书源,订阅源,替换规则,本地txt小说目录规则,在线朗读引擎,主题,阅读排版,添加到书架
-
-<a href="#readme">
-    <img src="https://img.shields.io/badge/-返回顶部-orange.svg" alt="#" align="right">
-</a>
-
-# Other-其他 [![](https://img.shields.io/badge/-Other-F5F5F5.svg)](#Other-其他-)
-##### 免责声明
-https://gedoor.github.io/Disclaimer
-
-##### 阅读3.0
-* [书源规则](https://mgz0227.github.io/The-tutorial-of-Legado/)
-* [更新日志](/app/src/main/assets/updateLog.md)
-* [帮助文档](/app/src/main/assets/web/help/md/appHelp.md)
-* [web端书架](https://github.com/gedoor/legado_web_bookshelf)
-* [web端源编辑](https://github.com/gedoor/legado_web_source_editor)
-
-<a href="#readme">
-    <img src="https://img.shields.io/badge/-返回顶部-orange.svg" alt="#" align="right">
-</a>
-
-# Grateful-感谢 [![](https://img.shields.io/badge/-Grateful-F5F5F5.svg)](#Grateful-感谢-)
-> * org.jsoup:jsoup
-> * cn.wanghaomiao:JsoupXpath
-> * com.jayway.jsonpath:json-path
-> * com.github.gedoor:rhino-android
-> * com.squareup.okhttp3:okhttp
-> * com.github.bumptech.glide:glide
-> * org.nanohttpd:nanohttpd
-> * org.nanohttpd:nanohttpd-websocket
-> * cn.bingoogolapple:bga-qrcode-zxing
-> * com.jaredrummler:colorpicker
-> * org.apache.commons:commons-text
-> * io.noties.markwon:core
-> * io.noties.markwon:image-glide
-> * com.hankcs:hanlp
-> * com.positiondev.epublib:epublib-core
-> * com.github.Moriafly:LyricViewX
-> * io.github.rosemoe:editor
-<a href="#readme">
-    <img src="https://img.shields.io/badge/-返回顶部-orange.svg" alt="#" align="right">
-</a>
+##### 阅读RU
+* [JS兼容文档](/docs/js.md)
+* [HTTP兼容文档](/docs/http.md)
+* [Rust Core](https://github.com/refgd/reader-core-rust)
 
 # Interface-界面 [![](https://img.shields.io/badge/-Interface-F5F5F5.svg)](#Interface-界面-)
 <img src="static/1.png" width="270"><img src="static/2.png" width="270"><img src="static/3.png" width="270"><img src="static/4.png" width="270">

@@ -14,6 +14,7 @@ import io.legado.app.data.entities.BookChapter
 import io.legado.app.data.entities.BookProgress
 import io.legado.app.data.entities.BookProgressComparison
 import io.legado.app.data.entities.BookSource
+import io.legado.app.exception.NoStackTraceException
 import io.legado.app.help.AppWebDav
 import io.legado.app.help.book.BookHelp
 import io.legado.app.help.book.getBookSource
@@ -23,8 +24,8 @@ import io.legado.app.help.book.update
 import io.legado.app.help.config.AppConfig
 import io.legado.app.model.AudioPlay
 import io.legado.app.model.webBook.WebBook
+import io.legado.app.model.webBook.isRustNetworkAccessError
 import io.legado.app.utils.postEvent
-import io.legado.app.utils.toastOnUi
 
 class AudioPlayViewModel(application: Application) : BaseViewModel(application) {
     val titleData = MutableLiveData<String>()
@@ -70,20 +71,16 @@ class AudioPlayViewModel(application: Application) : BaseViewModel(application) 
 
     private suspend fun syncBookProgress(book: Book) {
         if (!AppConfig.syncBookProgress) return
-        try {
-            val progress = AppWebDav.getBookProgress(book) ?: return
-            when (progress.compareWith(book)) {
-                BookProgressComparison.LOCAL_NEWER -> {
-                    AppWebDav.uploadBookProgress(BookProgress(book))
-                    book.update()
-                }
-                BookProgressComparison.REMOTE_NEWER -> {
-                    AudioPlay.setProgress(progress)
-                }
-                BookProgressComparison.SAME -> Unit
+        val progress = AppWebDav.getBookProgress(book) ?: return
+        when (progress.compareWith(book)) {
+            BookProgressComparison.LOCAL_NEWER -> {
+                AppWebDav.uploadBookProgress(BookProgress(book))
+                book.update()
             }
-        } catch (e: Exception) {
-            AppLog.put("拉取听书进度失败《${book.name}》\n${e.localizedMessage}", e)
+            BookProgressComparison.REMOTE_NEWER -> {
+                AudioPlay.setProgress(progress)
+            }
+            BookProgressComparison.SAME -> Unit
         }
     }
 
@@ -93,8 +90,13 @@ class AudioPlayViewModel(application: Application) : BaseViewModel(application) 
             WebBook.getBookInfoAwait(bookSource, book)
             return true
         } catch (e: Exception) {
-            AppLog.put("详情页出错: ${e.localizedMessage}", e, true)
-            return false
+            if (e.isRustNetworkAccessError()) {
+                AppLog.put("AudioPlay detail network load failed for ${book.name}\n${e.localizedMessage}", e)
+                return false
+            }
+            throw NoStackTraceException(
+                "AudioPlay Rust detail failed for ${book.name}: ${e.localizedMessage ?: e}"
+            )
         }
     }
 
@@ -117,9 +119,14 @@ class AudioPlayViewModel(application: Application) : BaseViewModel(application) 
             AudioPlay.simulatedChapterSize = book.simulatedTotalChapterNum()
             AudioPlay.upDurChapter()
             return true
-        } catch (_: Exception) {
-            context.toastOnUi(R.string.error_load_toc)
-            return false
+        } catch (e: Exception) {
+            if (e.isRustNetworkAccessError()) {
+                AppLog.put("AudioPlay toc network load failed for ${book.name}\n${e.localizedMessage}", e)
+                return false
+            }
+            throw NoStackTraceException(
+                "AudioPlay Rust toc failed for ${book.name}: ${e.localizedMessage ?: e}"
+            )
         }
     }
 

@@ -2,9 +2,9 @@ package io.legado.app.lib.webdav
 
 import io.legado.app.data.appDb
 import io.legado.app.data.entities.Server.WebDavConfig
-import okhttp3.Credentials
 import java.nio.charset.Charset
 import java.nio.charset.StandardCharsets
+import java.util.Base64
 
 data class Authorization(
     val username: String,
@@ -15,7 +15,7 @@ data class Authorization(
     var name = "Authorization"
         private set
 
-    var data: String = Credentials.basic(username, password, charset)
+    var data: String = basicAuthorization(username, password, charset)
         private set
 
     override fun toString(): String {
@@ -29,4 +29,14 @@ data class Authorization(
 
     constructor(webDavConfig: WebDavConfig) : this(webDavConfig.username, webDavConfig.password)
 
+}
+
+internal fun basicAuthorization(
+    username: String,
+    password: String,
+    charset: Charset = StandardCharsets.ISO_8859_1
+): String {
+    val userPass = "$username:$password"
+    val encoded = Base64.getEncoder().encodeToString(userPass.toByteArray(charset))
+    return "Basic $encoded"
 }

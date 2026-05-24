@@ -24,7 +24,7 @@ class LegadoGlideModule : AppGlideModule() {
         registry.replace(
             GlideUrl::class.java,
             InputStream::class.java,
-            OkHttpModeLoaderFactory
+            RustImageModelLoaderFactory
         )
         registry.prepend(
             String::class.java,

@@ -3,7 +3,6 @@ package io.legado.app.service
 import android.content.Intent
 import androidx.core.app.NotificationCompat
 import androidx.lifecycle.lifecycleScope
-import com.script.ScriptException
 import io.legado.app.R
 import io.legado.app.base.BaseService
 import io.legado.app.constant.AppConst
@@ -41,7 +40,6 @@ import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
-import org.mozilla.javascript.WrappedException
 import splitties.init.appCtx
 import splitties.systemservices.notificationManager
 import java.net.InetSocketAddress
@@ -143,10 +141,10 @@ class CheckSourceService : BaseService() {
             Debug.updateFinalMessage(source.bookSourceUrl, "校验成功")
         }.onFailure {
             currentCoroutineContext().ensureActive()
-            when (it) {
-                is TimeoutCancellationException -> source.addGroup("校验超时")
-                is ScriptException, is WrappedException -> source.addGroup("js失效")
-                !is NoStackTraceException -> source.addGroup("网站失效")
+            when {
+                it is TimeoutCancellationException -> source.addGroup("校验超时")
+                it.message?.contains("JavaScript", ignoreCase = true) == true -> source.addGroup("js失效")
+                it !is NoStackTraceException -> source.addGroup("网站失效")
             }
             if (CheckSource.wSourceComment) {
                 source.addErrorComment(it)

@@ -6,8 +6,9 @@ import android.net.NetworkCapabilities
 import android.os.Build
 import cn.hutool.core.lang.Validator
 import io.legado.app.constant.AppLog
+import io.legado.app.exception.NoStackTraceException
 import io.legado.app.help.config.AppConfig
-import okhttp3.internal.publicsuffix.PublicSuffixDatabase
+import io.legado.app.model.webBook.RustAnalyzerBridge
 import splitties.systemservices.connectivityManager
 import java.net.InetAddress
 import java.net.NetworkInterface
@@ -164,11 +165,12 @@ object NetworkUtils {
         if (relativePathTrim.isDataUrl()) return relativePathTrim
         if (relativePathTrim.startsWith("javascript")) return ""
         if (baseURL.isNullOrEmpty() || baseURL.isDataUrl()) return relativePathTrim
-        var absoluteUrl: URL? = null
-        try {
-            absoluteUrl = URL(baseURL.substringBefore(","))
+        val absoluteUrl = try {
+            URL(baseURL.substringBefore(","))
         } catch (e: Exception) {
-            e.printOnDebug()
+            throw NoStackTraceException(
+                "NetworkUtils absolute URL base is invalid for Rust analyzer handoff: $baseURL; ${e.localizedMessage}"
+            )
         }
         return getAbsoluteURL(absoluteUrl, relativePathTrim)
     }
@@ -182,15 +184,14 @@ object NetworkUtils {
         if (relativePathTrim.isAbsUrl()) return relativePathTrim
         if (relativePathTrim.isDataUrl()) return relativePathTrim
         if (relativePathTrim.startsWith("javascript")) return ""
-        var relativeUrl = relativePathTrim
         try {
             val parseUrl = URL(baseURL, relativePath)
-            relativeUrl = parseUrl.toString()
-            return relativeUrl
+            return parseUrl.toString()
         } catch (e: Exception) {
-            AppLog.put("网址拼接出错\n${e.localizedMessage}", e)
+            throw NoStackTraceException(
+                "NetworkUtils absolute URL join failed for Rust analyzer handoff: base=$baseURL, relative=$relativePathTrim; ${e.localizedMessage}"
+            )
         }
-        return relativeUrl
     }
 
     fun getBaseUrl(url: String?): String? {
@@ -215,35 +216,27 @@ object NetworkUtils {
      */
     fun getSubDomain(url: String): String {
         val baseUrl = getBaseUrl(url) ?: return url
-        return kotlin.runCatching {
-            val mURL = URL(baseUrl)
-            val host: String = mURL.host
-            //mURL.scheme https/http
-            //判断是否为ip
-            if (isIPAddress(host)) return host
-            //PublicSuffixDatabase处理域名
-            PublicSuffixDatabase.get().getEffectiveTldPlusOne(host) ?: host
-        }.getOrDefault(baseUrl)
+        val mURL = URL(baseUrl)
+        val host: String = mURL.host
+        //mURL.scheme https/http
+        //判断是否为ip
+        if (isIPAddress(host)) return host
+        return RustAnalyzerBridge.effectiveDomain(baseUrl).ifBlank { host }
     }
 
     fun getSubDomainOrNull(url: String): String? {
         val baseUrl = getBaseUrl(url) ?: return null
-        return kotlin.runCatching {
-            val mURL = URL(baseUrl)
-            val host: String = mURL.host
-            //mURL.scheme https/http
-            //判断是否为ip
-            if (isIPAddress(host)) return host
-            //PublicSuffixDatabase处理域名
-            PublicSuffixDatabase.get().getEffectiveTldPlusOne(host) ?: host
-        }.getOrDefault(null)
+        val mURL = URL(baseUrl)
+        val host: String = mURL.host
+        //mURL.scheme https/http
+        //判断是否为ip
+        if (isIPAddress(host)) return host
+        return RustAnalyzerBridge.effectiveDomain(baseUrl).ifBlank { host }
     }
 
     fun getDomain(url: String): String {
         val baseUrl = getBaseUrl(url) ?: return url
-        return kotlin.runCatching {
-            URL(baseUrl).host
-        }.getOrDefault(baseUrl)
+        return URL(baseUrl).host
     }
 
     /**

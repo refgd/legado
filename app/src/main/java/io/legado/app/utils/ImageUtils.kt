@@ -1,10 +1,10 @@
 package io.legado.app.utils
 
-import io.legado.app.constant.AppLog
 import io.legado.app.data.entities.BaseSource
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookSource
 import io.legado.app.data.entities.RssSource
+import io.legado.app.exception.NoStackTraceException
 import java.io.ByteArrayInputStream
 import java.io.InputStream
 
@@ -23,16 +23,13 @@ object ImageUtils {
     ): ByteArray? {
         val ruleJs = getRuleJs(source, isCover)
         if (ruleJs.isNullOrBlank()) return bytes
-        //解密库hutool.crypto ByteArray|InputStream -> ByteArray
-        return kotlin.runCatching {
-            source?.evalJS(ruleJs) {
-                put("book", book)
-                put("result", bytes)
-                put("src", src)
-            } as ByteArray
-        }.onFailure {
-            AppLog.putDebug("${src}解密错误", it)
-        }.getOrNull()
+        val result = source?.evalJS(ruleJs) {
+            put("book", book)
+            put("result", bytes)
+            put("src", src)
+        }
+        return result as? ByteArray
+            ?: throw NoStackTraceException("${src} image decode JS must return ByteArray, got ${result?.javaClass?.name ?: "null"}")
     }
 
     fun decode(
@@ -41,17 +38,7 @@ object ImageUtils {
     ): InputStream? {
         val ruleJs = getRuleJs(source, isCover)
         if (ruleJs.isNullOrBlank()) return inputStream
-        //解密库hutool.crypto ByteArray|InputStream -> ByteArray
-        return kotlin.runCatching {
-            val bytes = source?.evalJS(ruleJs) {
-                put("book", book)
-                put("result", inputStream)
-                put("src", src)
-            } as ByteArray
-            ByteArrayInputStream(bytes)
-        }.onFailure {
-            AppLog.putDebug("${src}解密错误", it)
-        }.getOrNull()
+        return ByteArrayInputStream(decode(src, inputStream.readBytes(), isCover, source, book))
     }
 
     fun skipDecode(source: BaseSource?, isCover: Boolean): Boolean {

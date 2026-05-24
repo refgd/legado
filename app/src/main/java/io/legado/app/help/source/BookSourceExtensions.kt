@@ -1,19 +1,15 @@
 package io.legado.app.help.source
 
-import com.script.rhino.runScriptWithContext
 import io.legado.app.constant.BookSourceType
 import io.legado.app.constant.BookType
 import io.legado.app.data.entities.BookSource
 import io.legado.app.data.entities.BookSourcePart
 import io.legado.app.data.entities.rule.ExploreKind
-import io.legado.app.ui.main.explore.ExploreAdapter.Companion.exploreInfoMapList
+import io.legado.app.model.webBook.RustAnalyzerBridge
 import io.legado.app.utils.ACache
 import io.legado.app.utils.GSON
-import io.legado.app.utils.InfoMap
 import io.legado.app.utils.MD5Utils
-import io.legado.app.utils.fromJsonArray
 import io.legado.app.utils.isJsonArray
-import io.legado.app.utils.printOnDebug
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -65,74 +61,15 @@ suspend fun BookSource.exploreKinds(): List<ExploreKind> {
     val mutex = mutexMap[bookSourceUrl] ?: Mutex().apply { mutexMap[bookSourceUrl] = this }
     mutex.withLock {
         exploreKindsMap[exploreKindsKey]?.let { return it }
-        val kinds = arrayListOf<ExploreKind>()
-        withContext(Dispatchers.IO) {
-            kotlin.runCatching {
-                val ruleStr = when {
-                    exploreUrl.startsWith("@js:", true) -> {
-                        aCache.getAsString(exploreKindsKey)?.takeIf { it.isNotBlank() } ?: run {
-                            val exploreInfoMap = exploreInfoMapList[bookSourceUrl] ?: InfoMap(bookSourceUrl).also {
-                                exploreInfoMapList.put(bookSourceUrl, it)
-                            }
-                            runScriptWithContext {
-                                evalJS(exploreUrl.substring(4)) {
-                                    put("infoMap", exploreInfoMap)
-                                }?.toString()?.trim().orEmpty()
-                            }.also { rule ->
-                                if (rule.isValidExploreKindsRule()) {
-                                    aCache.put(exploreKindsKey, rule)
-                                }
-                            }
-                        }
-                    }
-                    exploreUrl.startsWith("<js>", true) -> {
-                        aCache.getAsString(exploreKindsKey)?.takeIf { it.isNotBlank() } ?: run {
-                            val exploreInfoMap = exploreInfoMapList[bookSourceUrl] ?: InfoMap(bookSourceUrl).also {
-                                exploreInfoMapList.put(bookSourceUrl, it)
-                            }
-                            runScriptWithContext {
-                                evalJS(exploreUrl.substring(4, exploreUrl.lastIndexOf("<"))) {
-                                    put("infoMap", exploreInfoMap)
-                                }?.toString()?.trim().orEmpty()
-                            }.also { rule ->
-                                if (rule.isValidExploreKindsRule()) {
-                                    aCache.put(exploreKindsKey, rule)
-                                }
-                            }
-                        }
-                    }
-                    else -> exploreUrl
-                }
-                
-                if (!ruleStr.isValidExploreKindsRule()) {
-                    return@runCatching
-                }
-                if (ruleStr.isJsonArray()) {
-                    GSON.fromJsonArray<ExploreKind>(ruleStr).getOrThrow().let {
-                        kinds.addAll(it)
-                    }
-                } else {
-                    ruleStr.split("(&&|\n)+".toRegex()).forEach { kindStr ->
-                        val kindCfg = kindStr.split("::")
-                        kinds.add(ExploreKind(kindCfg.first(), kindCfg.getOrNull(1)))
-                    }
-                }
-            }.onFailure {
-                kinds.add(ExploreKind("ERROR:${it.localizedMessage}", it.stackTraceToString()))
-                it.printOnDebug()
-            }
+        val kinds = withContext(Dispatchers.IO) {
+            RustAnalyzerBridge.exploreKinds(this@exploreKinds)
+        }
+        if (kinds.isNotEmpty()) {
+            aCache.put(exploreKindsKey, GSON.toJson(kinds))
         }
         exploreKindsMap[exploreKindsKey] = kinds
         return kinds
     }
-}
-
-private fun String.isValidExploreKindsRule(): Boolean {
-    val rule = trim()
-    if (rule.isBlank()) return false
-    if (rule.equals("null", ignoreCase = true)) return false
-    if (rule.equals("undefined", ignoreCase = true)) return false
-    return true
 }
 
 suspend fun BookSourcePart.clearExploreKindsCache() {

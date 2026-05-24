@@ -5,7 +5,6 @@ import android.content.Context
 import android.content.Intent
 import io.legado.app.R
 import io.legado.app.constant.AppConst
-import io.legado.app.constant.AppLog
 import io.legado.app.constant.EventBus
 import io.legado.app.constant.IntentAction
 import io.legado.app.constant.Status
@@ -17,6 +16,7 @@ import io.legado.app.data.entities.BookProgressComparison
 import io.legado.app.data.entities.BookSource
 import io.legado.app.data.entities.ReadRecentBook
 import io.legado.app.data.entities.ReadRecord
+import io.legado.app.exception.NoStackTraceException
 import io.legado.app.help.AppWebDav
 import io.legado.app.help.ReadRecordDailyHelper
 import io.legado.app.help.book.ContentProcessor
@@ -28,9 +28,8 @@ import io.legado.app.help.config.AppConfig
 import io.legado.app.help.coroutine.Coroutine
 import io.legado.app.help.exoplayer.ExoPlayerHelper
 import io.legado.app.help.globalExecutor
-import io.legado.app.model.analyzeRule.AnalyzeUrl
 import io.legado.app.model.webBook.WebBook
-import io.legado.app.model.analyzeRule.AnalyzeUrl.Companion.getMediaRequest
+import io.legado.app.model.webBook.RustAnalyzerBridge
 import io.legado.app.service.AudioPlayService
 import io.legado.app.model.SourceCallBack
 import io.legado.app.ui.about.ReadRecordWidgetStore
@@ -220,13 +219,18 @@ object AudioPlay : CoroutineScope by MainScope() {
                     .onSuccess { content ->
                         val content = content.trim()
                         if (content.isEmpty()) {
-                            appCtx.toastOnUi(R.string.cache_manage_audio_url_empty)
+                            throw NoStackTraceException(
+                                "AudioPlay Rust content returned empty media URL for ${book.name}-${chapter.title}"
+                            )
                         } else {
                             contentLoadFinish(chapter, content)
                         }
                     }.onError {
-                        AppLog.put("获取资源链接出错\n$it", it, true)
                         upLoading(false)
+                        throw NoStackTraceException(
+                            "AudioPlay Rust content/media URL failed for ${book.name}-${chapter.title}: " +
+                                (it.localizedMessage ?: it.toString())
+                        )
                     }.onCancel {
                         removeLoading(index)
                     }.onFinally {
@@ -246,12 +250,13 @@ object AudioPlay : CoroutineScope by MainScope() {
     private fun contentLoadFinish(chapter: BookChapter, content: String) {
         if (chapter.index == book?.durChapterIndex) {
             kotlin.runCatching {
-                val request = AnalyzeUrl(
-                    content,
-                    source = bookSource,
-                    ruleData = book,
-                    chapter = chapter
-                ).getMediaRequest()
+                val source = bookSource ?: return@runCatching
+                val request = RustAnalyzerBridge.resolveMediaRequest(
+                    url = content,
+                    source = source,
+                    baseUrl = chapter.baseUrl,
+                    rulePath = "AudioPlay.contentLoadFinish"
+                )
                 if (chapter.resourceUrl != request.url) {
                     chapter.resourceUrl = request.url
                     chapter.update()
@@ -398,8 +403,6 @@ object AudioPlay : CoroutineScope by MainScope() {
         val book = book ?: return
         Coroutine.async {
             AppWebDav.getBookProgress(book)
-        }.onError {
-            AppLog.put("拉取听书进度失败", it)
         }.onSuccess { progress ->
             when (progress?.compareWith(book)) {
                 null,

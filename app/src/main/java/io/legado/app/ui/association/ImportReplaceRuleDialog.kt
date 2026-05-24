@@ -20,6 +20,7 @@ import io.legado.app.data.entities.ReplaceRule
 import io.legado.app.databinding.DialogCustomGroupBinding
 import io.legado.app.databinding.DialogRecyclerViewBinding
 import io.legado.app.databinding.ItemSourceImportBinding
+import io.legado.app.exception.NoStackTraceException
 import io.legado.app.lib.dialogs.alert
 import io.legado.app.lib.theme.primaryColor
 import io.legado.app.ui.widget.dialog.CodeDialog
@@ -183,10 +184,14 @@ class ImportReplaceRuleDialog() : BaseDialogFragment(R.layout.dialog_recycler_vi
 
     override fun onCodeSave(code: String, requestId: String?) {
         requestId?.toInt()?.let {
-            GSON.fromJsonObject<ReplaceRule>(code).getOrNull()?.let { rule ->
-                viewModel.allRules[it] = rule
-                adapter.setItem(it, rule)
+            val rule = GSON.fromJsonObject<ReplaceRule>(code).getOrElse { error ->
+                throw NoStackTraceException(
+                    "ImportReplaceRuleDialog code JSON is invalid for Rust analyzer handoff: " +
+                            (error.localizedMessage ?: error::class.java.name)
+                )
             }
+            viewModel.allRules[it] = rule
+            adapter.setItem(it, rule)
         }
     }
 

@@ -15,8 +15,6 @@ import io.legado.app.databinding.DialogEditTextBinding
 import io.legado.app.help.ai.AiChatService
 import io.legado.app.help.ai.AiToolRegistry
 import io.legado.app.help.config.AppConfig
-import io.legado.app.help.http.newCallResponse
-import io.legado.app.help.http.okHttpClient
 import io.legado.app.lib.dialogs.alert
 import io.legado.app.lib.dialogs.selector
 import io.legado.app.lib.prefs.SwitchPreference
@@ -26,6 +24,7 @@ import io.legado.app.ui.main.ai.AiModelConfig
 import io.legado.app.ui.main.ai.AiMcpServerConfig
 import io.legado.app.ui.main.ai.AiProviderConfig
 import io.legado.app.ui.main.ai.AiSkillConfig
+import io.legado.app.utils.RustRemoteFetch
 import io.legado.app.utils.postEvent
 import io.legado.app.utils.setEdgeEffectColor
 import io.legado.app.utils.toastOnUi
@@ -711,14 +710,14 @@ class AiConfigFragment : PreferenceFragment(),
                 runCatching {
                     var lastError = ""
                     defaultSkillUrls.forEach { skillUrl ->
-                        okHttpClient.newCallResponse {
-                            url(skillUrl)
-                        }.use { response ->
-                            if (response.isSuccessful) {
-                                return@runCatching skillUrl to response.body?.string().orEmpty()
-                            }
-                            lastError = "${response.code} ${response.message}"
+                        val response = RustRemoteFetch.bytes(
+                            skillUrl,
+                            "AiConfigFragment.importDefaultSkill"
+                        )
+                        if (response.code in 200..299) {
+                            return@runCatching skillUrl to response.body.decodeToString()
                         }
+                        lastError = "${response.code} ${response.message}"
                     }
                     error(lastError.ifBlank { "No available SKILL.md" })
                 }

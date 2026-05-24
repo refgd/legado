@@ -2,20 +2,13 @@ package io.legado.app.help
 
 import androidx.annotation.Keep
 import io.legado.app.exception.NoStackTraceException
-import io.legado.app.model.analyzeRule.AnalyzeRule
-import io.legado.app.model.analyzeRule.AnalyzeRule.Companion.setCoroutineContext
-import io.legado.app.model.analyzeRule.AnalyzeUrl
+import io.legado.app.model.webBook.RustAnalyzerBridge
 import io.legado.app.utils.ACache
-import io.legado.app.utils.FileUtils
 import io.legado.app.utils.GSON
-import io.legado.app.utils.compress.ZipUtils
-import io.legado.app.utils.createFileReplace
-import io.legado.app.utils.externalCache
 import io.legado.app.utils.fromJsonArray
 import io.legado.app.utils.fromJsonObject
-import kotlinx.coroutines.currentCoroutineContext
-import splitties.init.appCtx
 import java.io.File
+import splitties.init.appCtx
 
 @Suppress("MemberVisibilityCanBePrivate")
 object DirectLinkUpload {
@@ -37,35 +30,22 @@ object DirectLinkUpload {
         if (downloadUrlRule.isBlank()) {
             throw NoStackTraceException("下载地址规则未配置")
         }
-        var mFileName = fileName
-        var mFile = file
-        var mContentType = contentType
-        if (rule.compress && contentType != "application/zip") {
-            mFileName = "$fileName.zip"
-            mContentType = "application/zip"
-            mFile = when (file) {
-                is File -> {
-                    val zipFile = File(FileUtils.getPath(appCtx.externalCache, "upload", mFileName))
-                    zipFile.createFileReplace()
-                    ZipUtils.zipFile(file, zipFile)
-                    zipFile
-                }
-
-                is ByteArray -> ZipUtils.zipByteArray(file, fileName)
-                is String -> ZipUtils.zipByteArray(file.toByteArray(), fileName)
-                else -> ZipUtils.zipByteArray(GSON.toJson(file).toByteArray(), fileName)
-            }
+        val uploadBytes = when (val uploadFile = file) {
+            is File -> uploadFile.readBytes()
+            is ByteArray -> uploadFile
+            is String -> uploadFile.toByteArray()
+            else -> GSON.toJson(uploadFile).toByteArray()
         }
-        val analyzeUrl = AnalyzeUrl(url)
-        val res = analyzeUrl.upload(mFileName, mFile, mContentType)
-        if (mFile is File) {
-            mFile.delete()
-        }
-        val analyzeRule = AnalyzeRule().setContent(res.body, res.url)
-            .setCoroutineContext(currentCoroutineContext())
-        val downloadUrl = analyzeRule.getString(downloadUrlRule)
+        val downloadUrl = RustAnalyzerBridge.directLinkUpload(
+            uploadUrl = url,
+            downloadUrlRule = downloadUrlRule,
+            fileName = fileName,
+            contentType = contentType,
+            body = uploadBytes,
+            compress = rule.compress && contentType != "application/zip"
+        )
         if (downloadUrl.isBlank()) {
-            throw NoStackTraceException("上传失败,${res.body}")
+            throw NoStackTraceException("上传失败")
         }
         return downloadUrl
     }
@@ -84,7 +64,14 @@ object DirectLinkUpload {
 
     fun getConfig(): Rule? {
         val json = ACache.get(cacheDir = false).getAsString(ruleFileName)
-        return GSON.fromJsonObject<Rule>(json).getOrNull()
+        if (json.isNullOrBlank()) {
+            return null
+        }
+        return GSON.fromJsonObject<Rule>(json).getOrElse {
+            throw NoStackTraceException(
+                "DirectLinkUpload rule JSON is invalid for Rust analyzer handoff: ${it.localizedMessage}"
+            )
+        }
     }
 
     fun putConfig(rule: Rule) {

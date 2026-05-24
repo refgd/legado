@@ -4,6 +4,7 @@ import io.legado.app.constant.BookSourceType
 import io.legado.app.data.appDb
 import io.legado.app.data.entities.BookSource
 import io.legado.app.data.entities.SearchBook
+import io.legado.app.exception.NoStackTraceException
 import io.legado.app.model.webBook.WebBook
 import kotlinx.coroutines.Dispatchers.IO
 import kotlinx.coroutines.withContext
@@ -246,33 +247,31 @@ object AiLibraryTool {
         val batchMode = arguments?.optString("mode")?.trim().orEmpty() == "batch"
         val results = arrayListOf<SearchBook>()
         val groupedResults = JSONArray()
-        val errors = JSONArray()
         for (source in sources) {
             if (results.size >= limit) break
-            runCatching {
+            val books = try {
                 WebBook.searchBookAwait(
                     bookSource = source,
                     key = keyword,
                     page = 1,
                     shouldBreak = { size -> results.size + size >= limit }
                 )
-            }.onSuccess { books ->
-                appDb.searchBookDao.insert(*books.toTypedArray())
-                val limitedBooks = books.take(limit - results.size)
-                results += limitedBooks
-                if (batchMode) {
-                    groupedResults.put(JSONObject().apply {
-                        put("sourceUrl", source.bookSourceUrl)
-                        put("sourceName", source.bookSourceName)
-                        put("results", JSONArray().apply {
-                            limitedBooks.distinctBy { it.bookUrl }.forEach { put(searchBookToJson(it)) }
-                        })
+            } catch (error: Throwable) {
+                throw NoStackTraceException(
+                    "AiLibraryTool Rust search failed for ${source.bookSourceName}: " +
+                        (error.localizedMessage ?: error.toString())
+                )
+            }
+            appDb.searchBookDao.insert(*books.toTypedArray())
+            val limitedBooks = books.take(limit - results.size)
+            results += limitedBooks
+            if (batchMode) {
+                groupedResults.put(JSONObject().apply {
+                    put("sourceUrl", source.bookSourceUrl)
+                    put("sourceName", source.bookSourceName)
+                    put("results", JSONArray().apply {
+                        limitedBooks.distinctBy { it.bookUrl }.forEach { put(searchBookToJson(it)) }
                     })
-                }
-            }.onFailure { throwable ->
-                errors.put(JSONObject().apply {
-                    put("source", source.bookSourceName)
-                    put("error", throwable.localizedMessage ?: throwable.javaClass.simpleName)
                 })
             }
         }
@@ -287,7 +286,6 @@ object AiLibraryTool {
             if (batchMode) {
                 put("groupedResults", groupedResults)
             }
-            put("errors", errors)
         }.toString()
     }
 

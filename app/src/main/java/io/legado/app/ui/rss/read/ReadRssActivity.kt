@@ -30,19 +30,17 @@ import androidx.activity.addCallback
 import androidx.activity.viewModels
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.size
-import com.script.rhino.runScriptWithContext
 import io.legado.app.R
 import io.legado.app.base.VMBaseActivity
 import io.legado.app.constant.AppConst
 import io.legado.app.constant.AppConst.imagePathKey
 import io.legado.app.constant.AppLog
+import io.legado.app.data.entities.RssSource
 import io.legado.app.databinding.ActivityRssReadBinding
 import io.legado.app.help.WebCacheManager
 import io.legado.app.help.webView.WebJsExtensions
 import io.legado.app.help.config.AppConfig
-import io.legado.app.help.http.CookieManager
-import io.legado.app.help.http.okHttpClient
-import io.legado.app.help.http.text
+import io.legado.app.help.webView.fetchModifiedContentWithRust
 import io.legado.app.lib.dialogs.SelectItem
 import io.legado.app.lib.dialogs.selector
 import io.legado.app.lib.theme.accentColor
@@ -65,13 +63,11 @@ import io.legado.app.utils.share
 import io.legado.app.utils.showDialogFragment
 import io.legado.app.utils.splitNotBlank
 import io.legado.app.utils.startActivity
-import io.legado.app.utils.textArray
 import io.legado.app.utils.toastOnUi
 import io.legado.app.utils.toggleSystemBar
 import io.legado.app.utils.viewbindingdelegate.viewBinding
 import io.legado.app.utils.visible
 import org.apache.commons.text.StringEscapeUtils
-import org.jsoup.Jsoup
 import splitties.views.bottomPadding
 import java.io.ByteArrayInputStream
 import java.util.regex.PatternSyntaxException
@@ -87,10 +83,9 @@ import io.legado.app.help.webView.WebJsExtensions.Companion.nameBasic
 import io.legado.app.help.webView.WebJsExtensions.Companion.nameCache
 import io.legado.app.help.webView.WebJsExtensions.Companion.nameJava
 import io.legado.app.help.webView.WebJsExtensions.Companion.nameSource
-import io.legado.app.help.http.newCallResponse
 import io.legado.app.help.webView.PooledWebView
 import io.legado.app.help.webView.WebJsExtensions.Companion.JS_INJECTION
-import io.legado.app.help.webView.WebJsExtensions.Companion.JS_URL
+import io.legado.app.model.webBook.RustAnalyzerBridge
 import io.legado.app.help.webView.WebJsExtensions.Companion.nameUrl
 import io.legado.app.help.webView.WebViewPool
 import io.legado.app.help.webView.WebViewPool.BLANK_HTML
@@ -397,7 +392,13 @@ class ReadRssActivity : VMBaseActivity<ActivityRssReadBinding, ReadRssViewModel>
         viewModel.urlLiveData.observe(this) { urlState ->
             upWebviewSettings(urlState.getUserAgent())
             initJavascriptInterface()
-            CookieManager.applyToWebView(urlState.url)
+            viewModel.rssSource?.let {
+                RustAnalyzerBridge.applyCookieToWebView(
+                    source = it,
+                    url = urlState.url,
+                    rulePath = "ReadRssActivity.applyCookieToWebView"
+                )
+            }
             currentWebView.loadUrl(urlState.url, urlState.headerMap)
         }
         viewModel.htmlLiveData.observe(this) { html ->
@@ -471,7 +472,7 @@ class ReadRssActivity : VMBaseActivity<ActivityRssReadBinding, ReadRssViewModel>
             currentWebView.evaluateJavascript("document.documentElement.outerHTML") {
                 val html = StringEscapeUtils.unescapeJson(it).replace("^\"|\"$".toRegex(), "")
                 viewModel.readAloud(
-                    Jsoup.parse(html).textArray().joinToString("\n")
+                    RustAnalyzerBridge.htmlTextArray(html, "ReadRss.readAloud").joinToString("\n")
                 )
             }
         }
@@ -667,48 +668,16 @@ class ReadRssActivity : VMBaseActivity<ActivityRssReadBinding, ReadRssViewModel>
         }
 
         private suspend fun getModifiedContentWithJs(url: String, request: WebResourceRequest): WebResourceResponse? {
-            try {
-                val cookie = webCookieManager.getCookie(url)
-                val res = okHttpClient.newCallResponse {
-                    url(url)
-                    method(request.method, null)
-                    if (!cookie.isNullOrEmpty()) {
-                        addHeader("Cookie", cookie)
-                    }
-                    request.requestHeaders?.forEach { (key, value) ->
-                        addHeader(key, value)
-                    }
-                }
-                res.headers("Set-Cookie").forEach { setCookie ->
-                    webCookieManager.setCookie(url, setCookie)
-                }
-                val body = res.body
-                val contentType = body.contentType()
-                val mimeType = contentType?.toString()?.substringBefore(";") ?: "text/html"
-                val charset = contentType?.charset() ?: Charsets.UTF_8
-                val charsetSre = charset.name()
-                val bodyText = body.text().let { originalText ->
-                    val headIndex = originalText.indexOf("<head", ignoreCase = true)
-                    if (headIndex >= 0) {
-                        val closingHeadIndex = originalText.indexOf('>', startIndex = headIndex)
-                        if (closingHeadIndex >= 0) {
-                            val insertPos = closingHeadIndex + 1
-                            StringBuilder(originalText).insert(insertPos, JS_URL).toString()
-                        } else {
-                            originalText
-                        }
-                    } else {
-                        originalText
-                    }
-                }
-                return WebResourceResponse(
-                    mimeType,
-                    charsetSre,
-                    ByteArrayInputStream(bodyText.toByteArray(charset))
-                )
-            } catch (_: Exception) {
-                return null
-            }
+            val source = viewModel.rssSource ?: return null
+            val cookie = webCookieManager.getCookie(url)
+            return fetchModifiedContentWithRust(
+                url = url,
+                request = request,
+                source = source,
+                cookie = cookie,
+                rulePath = "ReadRssActivity.webViewIntercept",
+                setCookie = { setCookie -> webCookieManager.setCookie(url, setCookie) }
+            )
         }
 
         override fun onPageFinished(view: WebView, url: String) {
@@ -742,17 +711,16 @@ class ReadRssActivity : VMBaseActivity<ActivityRssReadBinding, ReadRssViewModel>
                 source.shouldOverrideUrlLoading?.takeUnless(String::isNullOrBlank)?.let { js ->
                     val startTime = SystemClock.uptimeMillis()
                     val result = runCatching {
-                        runScriptWithContext(lifecycleScope.coroutineContext) {
-                            source.evalJS(js) {
-                                put("java", rssJsExtensions)
-                                put("url", url.toString())
-                            }.toString()
-                        }
+                        evalRssShouldOverrideUrlLoadingByRust(source, rssJsExtensions, js, url.toString())
                     }.onFailure {
-                        AppLog.put("${source.getTag()}: url跳转拦截js出错", it)
+                        throw NoStackTraceException(
+                            "${source.getTag()} Rust shouldOverrideUrlLoading JS failed for $url: ${it.localizedMessage ?: it}"
+                        )
                     }.getOrNull()
                     if (SystemClock.uptimeMillis() - startTime > 99) {
-                        AppLog.put("${source.getTag()}: url跳转拦截js执行耗时过长")
+                        throw NoStackTraceException(
+                            "${source.getTag()} Rust shouldOverrideUrlLoading JS exceeded 99ms for $url"
+                        )
                     }
                     if (result.isTrue()) return true
                 }
@@ -815,4 +783,16 @@ class ReadRssActivity : VMBaseActivity<ActivityRssReadBinding, ReadRssViewModel>
         private val webCookieManager by lazy { android.webkit.CookieManager.getInstance() }
     }
 
+}
+
+fun evalRssShouldOverrideUrlLoadingByRust(
+    source: RssSource,
+    java: RssJsExtensions,
+    js: String,
+    url: String
+): String {
+    return source.evalJS(js) {
+        put("java", java)
+        put("url", url)
+    }.toString()
 }

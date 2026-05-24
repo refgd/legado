@@ -7,12 +7,11 @@ import io.legado.app.base.BaseViewModel
 import io.legado.app.data.appDb
 import io.legado.app.data.entities.RssSource
 import io.legado.app.exception.NoStackTraceException
-import io.legado.app.help.AppCacheManager
 import io.legado.app.help.ConcurrentRateLimiter.Companion.concurrentRecordMap
 import io.legado.app.help.RuleComplete
-import io.legado.app.help.http.CookieStore
 import io.legado.app.help.source.removeSortCache
 import io.legado.app.model.SharedJsScope
+import io.legado.app.model.webBook.RustAnalyzerBridge
 import io.legado.app.utils.GSON
 import io.legado.app.utils.fromJsonObject
 import io.legado.app.utils.getClipText
@@ -60,8 +59,6 @@ class RssSourceEditViewModel(application: Application) : BaseViewModel(applicati
                 if (it.sourceUrl != source.sourceUrl) {
                     appDb.rssStarDao.updateOrigin(source.sourceUrl, it.sourceUrl)
                     appDb.rssArticleDao.updateOrigin(source.sourceUrl, it.sourceUrl)
-                    appDb.cacheDao.deleteSourceVariables(it.sourceUrl)
-                    AppCacheManager.clearSourceVariables()
                 }
             }
             appDb.rssSourceDao.insert(source)
@@ -107,7 +104,12 @@ class RssSourceEditViewModel(application: Application) : BaseViewModel(applicati
 
     fun clearCookie(url: String) {
         execute {
-            CookieStore.removeCookie(url)
+            val source = rssSource ?: RssSource(sourceUrl = url, sourceName = url)
+            RustAnalyzerBridge.evalJs(
+                source = source,
+                script = "cookie.removeCookie(${GSON.toJson(url)})",
+                rulePath = "RssSourceEditViewModel.clearCookie"
+            )
         }
     }
 

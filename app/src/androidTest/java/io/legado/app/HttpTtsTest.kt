@@ -1,26 +1,23 @@
 package io.legado.app
 
-import io.legado.app.help.config.AppConfig
-import io.legado.app.model.analyzeRule.AnalyzeUrl
-import kotlinx.coroutines.runBlocking
+import io.legado.app.data.entities.HttpTTS
+import io.legado.app.model.webBook.RustAnalyzerBridge
+import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class HttpTtsTest {
 
     @Test
-    fun test() {
-        val url = """
-            http://tsn.baidu.com/text2audio,{
-                "method": "POST",
-                "body": "tex={{java.encodeURI(java.encodeURI(speakText))}}&spd={{(speakSpeed + 5) / 10 + 4}}&per=4114&cuid=baidu_speech_demo&idx=1&cod=2&lan=zh&ctp=1&pdt=220&vol=5&aue=6&pit=5&_res_tag_=audio"
-            }
-        """.trimIndent()
-        val analyzeUrl =
-            AnalyzeUrl(url, speakText = "魔神", speakSpeed = AppConfig.speechRatePlay + 5)
-        runBlocking {
-            val response = analyzeUrl.getResponseAwait()
-            response.headers
-        }
+    fun ttsUrlRuleRunsInRustWithSpeakBindings() {
+        val httpTts = HttpTTS(
+            name = "Rust TTS",
+            url = "@js:`data:audio/mpeg;base64,${'$'}{java.base64Encode(speakText + ':' + speakSpeed)}`"
+        )
+
+        val response = RustAnalyzerBridge.fetchTtsAudio(httpTts, "魔神", 15)
+
+        assertEquals("audio/mpeg", response.contentType)
+        assertEquals("魔神:15", response.body.toString(Charsets.UTF_8))
     }
 
 }

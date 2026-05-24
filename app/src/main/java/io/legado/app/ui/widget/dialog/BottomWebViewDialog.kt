@@ -9,7 +9,6 @@ import android.net.Uri
 import android.net.http.SslError
 import android.os.Build
 import android.os.Bundle
-import android.util.Base64
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.KeyEvent
@@ -52,7 +51,8 @@ import io.legado.app.help.webView.WebJsExtensions.Companion.nameCache
 import io.legado.app.help.webView.WebJsExtensions.Companion.nameJava
 import io.legado.app.help.webView.WebJsExtensions.Companion.nameSource
 import io.legado.app.help.webView.WebViewPool
-import io.legado.app.model.analyzeRule.AnalyzeUrl
+import io.legado.app.model.webBook.RustAnalyzerBridge
+import io.legado.app.model.webBook.RustResolvedUrl
 import io.legado.app.ui.association.OnLineImportActivity
 import io.legado.app.utils.invisible
 import io.legado.app.utils.keepScreenOn
@@ -68,10 +68,7 @@ import androidx.core.view.size
 import io.legado.app.constant.AppConst.imagePathKey
 import io.legado.app.exception.NoStackTraceException
 import io.legado.app.help.coroutine.Coroutine
-import io.legado.app.help.http.newCallResponse
-import io.legado.app.help.http.newCallResponseBody
-import io.legado.app.help.http.okHttpClient
-import io.legado.app.help.http.text
+import io.legado.app.help.webView.fetchModifiedContentWithRust
 import io.legado.app.help.webView.WebJsExtensions.Companion.JS_URL
 import io.legado.app.help.webView.WebJsExtensions.Companion.nameUrl
 import io.legado.app.help.webView.WebViewPool.BLANK_HTML
@@ -84,6 +81,7 @@ import io.legado.app.utils.ACache
 import io.legado.app.utils.GSON
 import io.legado.app.utils.fromJsonObject
 import io.legado.app.utils.get
+import io.legado.app.utils.WebImageBytes
 import io.legado.app.utils.writeBytes
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Dispatchers.IO
@@ -549,9 +547,24 @@ class BottomWebViewDialog() : BottomSheetDialogFragment(R.layout.dialog_web_view
                         }
                     }
                 }
-                val analyzeUrl =
-                    AnalyzeUrl(url, source = source, coroutineContext = coroutineContext)
-                val html = args.getString("html") ?: analyzeUrl.getStrResponseAwait().body
+                appDb.bookSourceDao.getBookSource(sourceKey).let {
+                    if (it == null) {
+                        activity?.toastOnUi("no find bookSource")
+                        dismiss()
+                        return@launch
+                    }
+                    source = it
+                }
+                val resolved = RustAnalyzerBridge.resolveUrl(
+                    url = url,
+                    source = source,
+                    rulePath = "BottomWebViewDialog.load"
+                )
+                val html = args.getString("html") ?: RustAnalyzerBridge.fetchText(
+                    url = url,
+                    source = source,
+                    rulePath = "BottomWebViewDialog.load"
+                ).body
                 if (html.isNullOrEmpty()) {
                     throw NoStackTraceException("html is NullOrEmpty")
                 }
@@ -572,18 +585,10 @@ class BottomWebViewDialog() : BottomSheetDialogFragment(R.layout.dialog_web_view
                         JS_URL + html
                     }
                 }
-                appDb.bookSourceDao.getBookSource(sourceKey).let {
-                    if (it == null) {
-                        activity?.toastOnUi("no find bookSource")
-                        dismiss()
-                        return@launch
-                    }
-                    source = it
-                }
                 val bookType = args.getInt("bookType", 0)
                 currentWebView.post {
                     currentWebView.onResume() //缓存库拿的需要激活
-                    initWebView(analyzeUrl.url, spliceHtml, analyzeUrl.headerMap, bookType)
+                    initWebView(resolved.url, spliceHtml, resolved.headerMap(), bookType)
                     currentWebView.clearHistory()
                 }
             }.onFailure {
@@ -706,13 +711,7 @@ class BottomWebViewDialog() : BottomSheetDialogFragment(R.layout.dialog_web_view
     }
 
     private suspend fun webData2bitmap(data: String): ByteArray? {
-        return if (URLUtil.isValidUrl(data)) {
-            okHttpClient.newCallResponseBody {
-                url(data)
-            }.bytes()
-        } else {
-            Base64.decode(data.split(",").toTypedArray()[1], Base64.DEFAULT)
-        }
+        return WebImageBytes.fetch(data, source, "BottomWebViewDialog.saveImage")
     }
 
     override fun onDestroyView() {
@@ -950,49 +949,25 @@ class BottomWebViewDialog() : BottomSheetDialogFragment(R.layout.dialog_web_view
         }
         private val webCookieManager by lazy { android.webkit.CookieManager.getInstance() }
         private suspend fun getModifiedContentWithJs(url: String, request: WebResourceRequest): WebResourceResponse? {
-            try {
-                val cookie = webCookieManager.getCookie(url)
-                val res = okHttpClient.newCallResponse {
-                    url(url)
-                    method(request.method, null)
-                    if (!cookie.isNullOrEmpty()) {
-                        addHeader("Cookie", cookie)
-                    }
-                    request.requestHeaders?.forEach { (key, value) ->
-                        addHeader(key, value)
-                    }
-                }
-                res.headers("Set-Cookie").forEach { setCookie ->
-                    webCookieManager.setCookie(url, setCookie)
-                }
-                val body = res.body
-                val contentType = body.contentType()
-                val mimeType = contentType?.toString()?.substringBefore(";") ?: "text/html"
-                val charset = contentType?.charset() ?: Charsets.UTF_8
-                val charsetSre = charset.name()
-                val bodyText = body.text().let { originalText ->
-                    val headIndex = originalText.indexOf("<head", ignoreCase = true)
-                    if (headIndex >= 0) {
-                        val closingHeadIndex = originalText.indexOf('>', startIndex = headIndex)
-                        if (closingHeadIndex >= 0) {
-                            val insertPos = closingHeadIndex + 1
-                            StringBuilder(originalText).insert(insertPos, JS_URL).toString()
-                        } else {
-                            originalText
-                        }
-                    } else {
-                        originalText
-                    }
-                }
-                return WebResourceResponse(
-                    mimeType,
-                    charsetSre,
-                    ByteArrayInputStream(bodyText.toByteArray(charset))
-                )
-            } catch (_: Exception) {
-                return null
-            }
+            val source = source ?: return null
+            val cookie = webCookieManager.getCookie(url)
+            return fetchModifiedContentWithRust(
+                url = url,
+                request = request,
+                source = source,
+                cookie = cookie,
+                rulePath = "BottomWebViewDialog.webViewIntercept",
+                setCookie = { setCookie -> webCookieManager.setCookie(url, setCookie) }
+            )
         }
     }
 
+}
+
+private fun RustResolvedUrl.headerMap(): HashMap<String, String> {
+    return headers.mapNotNull { pair ->
+        val key = pair.getOrNull(0)?.takeIf { it.isNotBlank() }
+        val value = pair.getOrNull(1)
+        if (key == null || value == null) null else key to value
+    }.toMap(HashMap())
 }

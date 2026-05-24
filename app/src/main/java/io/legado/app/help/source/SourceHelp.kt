@@ -10,7 +10,6 @@ import io.legado.app.data.entities.BaseSource
 import io.legado.app.data.entities.BookSource
 import io.legado.app.data.entities.BookSourcePart
 import io.legado.app.data.entities.RssSource
-import io.legado.app.help.AppCacheManager
 import io.legado.app.help.config.SourceConfig
 import io.legado.app.help.coroutine.Coroutine
 import io.legado.app.model.AudioPlay
@@ -76,7 +75,6 @@ object SourceHelp {
                 deleteBookSourceInternal(it.bookSourceUrl)
             }
         }
-        AppCacheManager.clearSourceVariables()
     }
 
     fun deleteBookSources(sources: List<BookSource>) {
@@ -85,18 +83,15 @@ object SourceHelp {
                 deleteBookSourceInternal(it.bookSourceUrl)
             }
         }
-        AppCacheManager.clearSourceVariables()
     }
 
     private fun deleteBookSourceInternal(key: String) {
         appDb.bookSourceDao.delete(key)
-        appDb.cacheDao.deleteSourceVariables(key)
         SourceConfig.removeSource(key)
     }
 
     fun deleteBookSource(key: String) {
         deleteBookSourceInternal(key)
-        AppCacheManager.clearSourceVariables()
     }
 
     fun deleteRssSources(sources: List<RssSource>) {
@@ -105,18 +100,15 @@ object SourceHelp {
                 deleteRssSourceInternal(it.sourceUrl)
             }
         }
-        AppCacheManager.clearSourceVariables()
     }
 
     private fun deleteRssSourceInternal(key: String) {
         appDb.rssSourceDao.delete(key)
         appDb.rssArticleDao.delete(key)
-        appDb.cacheDao.deleteSourceVariables(key)
     }
 
     fun deleteRssSource(key: String) {
         deleteRssSourceInternal(key)
-        AppCacheManager.clearSourceVariables()
     }
 
     fun enableSource(key: String, @SourceType.Type type: Int, enable: Boolean) {

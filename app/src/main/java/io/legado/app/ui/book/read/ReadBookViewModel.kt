@@ -31,13 +31,14 @@ import io.legado.app.model.ReadBook
 import io.legado.app.model.SourceCallBack
 import io.legado.app.model.localBook.LocalBook
 import io.legado.app.model.webBook.WebBook
+import io.legado.app.model.webBook.isRustNetworkAccessError
 import io.legado.app.service.BaseReadAloudService
 import io.legado.app.ui.book.read.page.entities.TextChapter
 import io.legado.app.ui.book.searchContent.SearchResult
 import io.legado.app.utils.DocumentUtils
 import io.legado.app.utils.FileUtils
 import io.legado.app.utils.isContentScheme
-import io.legado.app.utils.mapParallelSafe
+import io.legado.app.utils.mapParallel
 import io.legado.app.utils.postEvent
 import io.legado.app.utils.toStringArray
 import io.legado.app.utils.toastOnUi
@@ -206,8 +207,14 @@ class ReadBookViewModel(application: Application) : BaseViewModel(application) {
             return true
         } catch (e: Throwable) {
             currentCoroutineContext().ensureActive()
-            ReadBook.upMsg("详情页出错: ${e.localizedMessage}")
-            return false
+            if (e.isRustNetworkAccessError()) {
+                AppLog.put("ReadBook detail network load failed for ${book.name}\n${e.localizedMessage}", e)
+                ReadBook.upMsg("LoadInfoError:${e.localizedMessage}")
+                return false
+            }
+            throw NoStackTraceException(
+                "ReadBook Rust detail failed for ${book.name}: ${e.localizedMessage ?: e}"
+            )
         }
     }
 
@@ -264,8 +271,14 @@ class ReadBookViewModel(application: Application) : BaseViewModel(application) {
                         return true
                     }.onFailure {
                         currentCoroutineContext().ensureActive()
-                        ReadBook.upMsg(context.getString(R.string.error_load_toc))
-                        return false
+                        if (it.isRustNetworkAccessError()) {
+                            AppLog.put("ReadBook toc network load failed for ${book.name}\n${it.localizedMessage}", it)
+                            ReadBook.upMsg("LoadTocError:${it.localizedMessage}")
+                            return false
+                        }
+                        throw NoStackTraceException(
+                            "ReadBook Rust toc failed for ${book.name}: ${it.localizedMessage ?: it}"
+                        )
                     }
             }
         }
@@ -340,7 +353,7 @@ class ReadBookViewModel(application: Application) : BaseViewModel(application) {
                 }
             }.onStart {
                 ReadBook.upMsg(context.getString(R.string.source_auto_changing))
-            }.mapParallelSafe(AppConfig.threadCount) { source ->
+            }.mapParallel(AppConfig.threadCount) { source ->
                 val book = WebBook.preciseSearchAwait(source, name, author).getOrThrow()
                 if (book.tocUrl.isEmpty()) {
                     WebBook.getBookInfoAwait(source, book)
@@ -366,8 +379,14 @@ class ReadBookViewModel(application: Application) : BaseViewModel(application) {
             }.onCompletion {
                 ReadBook.upMsg(null)
             }.catch {
-                AppLog.put("自动换源失败\n${it.localizedMessage}", it)
-                context.toastOnUi("自动换源失败\n${it.localizedMessage}")
+                if (it.isRustNetworkAccessError()) {
+                    AppLog.put("ReadBook auto change source network load failed for $name\n${it.localizedMessage}", it)
+                    ReadBook.upMsg("LoadSourceError:${it.localizedMessage}")
+                    return@catch
+                }
+                throw NoStackTraceException(
+                    "ReadBook auto change source Rust analyzer failed for $name: ${it.localizedMessage ?: it}"
+                )
             }.collect()
         }
     }

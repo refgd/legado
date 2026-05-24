@@ -1,14 +1,9 @@
 package io.legado.app.help
 
-import android.util.Base64
 import android.webkit.JavascriptInterface
-import cn.hutool.crypto.digest.DigestUtil
-import cn.hutool.crypto.digest.HMac
-import cn.hutool.crypto.symmetric.SymmetricCrypto
-import io.legado.app.help.crypto.AsymmetricCrypto
-import io.legado.app.help.crypto.Sign
-import io.legado.app.help.crypto.SymmetricCryptoAndroid
-import io.legado.app.utils.MD5Utils
+import io.legado.app.exception.NoStackTraceException
+import io.legado.app.model.webBook.RustAnalyzerBridge
+import io.legado.app.utils.GSON
 
 
 /**
@@ -18,50 +13,64 @@ import io.legado.app.utils.MD5Utils
 @Suppress("unused")
 interface JsEncodeUtils {
 
+    private fun rustJavaStringCall(name: String, vararg args: String): String {
+        if (!RustAnalyzerBridge.isAvailable) {
+            throw NoStackTraceException("Rust analyzer UniFFI binding is required for java.$name")
+        }
+        val argsJson = args.joinToString(",") { GSON.toJson(it) }
+        return RustAnalyzerBridge.evalJsRaw(
+            script = "java.$name($argsJson)",
+            rulePath = "JsEncodeUtils.$name"
+        )
+    }
+
+    private fun rustJavaAnyCall(name: String, vararg args: String): Any? {
+        if (!RustAnalyzerBridge.isAvailable) {
+            throw NoStackTraceException("Rust analyzer UniFFI binding is required for java.$name")
+        }
+        val argsJson = args.joinToString(",") { GSON.toJson(it) }
+        return RustAnalyzerBridge.evalJsAny(
+            script = "java.$name($argsJson)",
+            rulePath = "JsEncodeUtils.$name"
+        )
+    }
+
     @JavascriptInterface
     fun md5Encode(str: String): String {
-        return MD5Utils.md5Encode(str)
+        return rustJavaStringCall("md5Encode", str)
     }
 
     @JavascriptInterface
     fun md5Encode16(str: String): String {
-        return MD5Utils.md5Encode16(str)
+        return rustJavaStringCall("md5Encode16", str)
     }
 
 
     //******************对称加密解密************************//
 
-    /**
-     * 在js中这样使用
-     * java.createSymmetricCrypto(transformation, key, iv).decrypt(data)
-     * java.createSymmetricCrypto(transformation, key, iv).decryptStr(data)
-
-     * java.createSymmetricCrypto(transformation, key, iv).encrypt(data)
-     * java.createSymmetricCrypto(transformation, key, iv).encryptBase64(data)
-     * java.createSymmetricCrypto(transformation, key, iv).encryptHex(data)
-     */
-
-    /* 调用SymmetricCrypto key为null时使用随机密钥*/
     fun createSymmetricCrypto(
         transformation: String,
         key: ByteArray?,
         iv: ByteArray?
-    ): SymmetricCrypto {
-        val symmetricCrypto = SymmetricCryptoAndroid(transformation, key)
-        return if (iv != null && iv.isNotEmpty()) symmetricCrypto.setIv(iv) else symmetricCrypto
+    ): RustSymmetricCrypto {
+        return RustSymmetricCrypto(
+            transformation = transformation,
+            keyExpr = rustJsArg(key),
+            ivExpr = rustJsArg(iv)
+        )
     }
 
     fun createSymmetricCrypto(
         transformation: String,
         key: ByteArray
-    ): SymmetricCrypto {
+    ): RustSymmetricCrypto {
         return createSymmetricCrypto(transformation, key, null)
     }
 
     fun createSymmetricCrypto(
         transformation: String,
         key: String
-    ): SymmetricCrypto {
+    ): RustSymmetricCrypto {
         return createSymmetricCrypto(transformation, key, null)
     }
 
@@ -69,25 +78,26 @@ interface JsEncodeUtils {
         transformation: String,
         key: String,
         iv: String?
-    ): SymmetricCrypto {
-        return createSymmetricCrypto(
-            transformation, key.encodeToByteArray(), iv?.encodeToByteArray()
+    ): RustSymmetricCrypto {
+        return RustSymmetricCrypto(
+            transformation = transformation,
+            keyExpr = rustJsArg(key),
+            ivExpr = rustJsArg(iv)
         )
     }
     //******************非对称加密解密************************//
 
-    /* keys都为null时使用随机密钥 */
     fun createAsymmetricCrypto(
         transformation: String
-    ): AsymmetricCrypto {
-        return AsymmetricCrypto(transformation)
+    ): RustAsymmetricCrypto {
+        return RustAsymmetricCrypto(transformation)
     }
 
     //******************签名************************//
     fun createSign(
         algorithm: String
-    ): Sign {
-        return Sign(algorithm)
+    ): RustSign {
+        return RustSign(algorithm)
     }
     //******************对称加密解密old************************//
 
@@ -99,14 +109,11 @@ interface JsEncodeUtils {
      * @param transformation AES加密的方式
      * @param iv ECB模式的偏移向量
      */
-    @Deprecated(
-        "过于繁琐弃用",
-        ReplaceWith("createSymmetricCrypto(transformation, key, iv).decrypt(str)")
-    )
+    @Deprecated("过于繁琐弃用")
     fun aesDecodeToByteArray(
         str: String, key: String, transformation: String, iv: String
     ): ByteArray? {
-        return createSymmetricCrypto(transformation, key, iv).decrypt(str)
+        return rustJavaAnyCall("aesDecodeToByteArray", str, key, transformation, iv) as? ByteArray
     }
 
     /**
@@ -116,15 +123,12 @@ interface JsEncodeUtils {
      * @param transformation AES加密的方式
      * @param iv ECB模式的偏移向量
      */
-    @Deprecated(
-        "过于繁琐弃用,但是web需要调用",
-        ReplaceWith("createSymmetricCrypto(transformation, key, iv).decryptStr(str)")
-    )
+    @Deprecated("过于繁琐弃用,但是web需要调用")
     @JavascriptInterface
     fun aesDecodeToString(
         str: String, key: String, transformation: String, iv: String
     ): String? {
-        return createSymmetricCrypto(transformation, key, iv).decryptStr(str)
+        return rustJavaStringCall("aesBase64DecodeToString", str, key, transformation, iv)
     }
 
     /**
@@ -137,10 +141,7 @@ interface JsEncodeUtils {
      * @param iv Base64后的加盐
      * @return 解密后的字符串
      */
-    @Deprecated(
-        "过于繁琐弃用,但是web需要调用",
-        ReplaceWith("createSymmetricCrypto(transformation, key, iv).decryptStr(data)")
-    )
+    @Deprecated("过于繁琐弃用,但是web需要调用")
     @JavascriptInterface
     fun aesDecodeArgsBase64Str(
         data: String,
@@ -149,11 +150,7 @@ interface JsEncodeUtils {
         padding: String,
         iv: String
     ): String? {
-        return createSymmetricCrypto(
-            "AES/${mode}/${padding}",
-            Base64.decode(key, Base64.NO_WRAP),
-            Base64.decode(iv, Base64.NO_WRAP)
-        ).decryptStr(data)
+        return rustJavaStringCall("aesDecodeArgsBase64Str", data, key, mode, padding, iv)
     }
 
     /**
@@ -163,14 +160,11 @@ interface JsEncodeUtils {
      * @param transformation AES加密的方式
      * @param iv ECB模式的偏移向量
      */
-    @Deprecated(
-        "过于繁琐弃用",
-        ReplaceWith("createSymmetricCrypto(transformation, key, iv).decrypt(str)")
-    )
+    @Deprecated("过于繁琐弃用")
     fun aesBase64DecodeToByteArray(
         str: String, key: String, transformation: String, iv: String
     ): ByteArray? {
-        return createSymmetricCrypto(transformation, key, iv).decrypt(str)
+        return rustJavaAnyCall("aesBase64DecodeToByteArray", str, key, transformation, iv) as? ByteArray
     }
 
     /**
@@ -180,15 +174,12 @@ interface JsEncodeUtils {
      * @param transformation AES加密的方式
      * @param iv ECB模式的偏移向量
      */
-    @Deprecated(
-        "过于繁琐弃用,但是web需要调用",
-        ReplaceWith("createSymmetricCrypto(transformation, key, iv).decryptStr(str)")
-    )
+    @Deprecated("过于繁琐弃用,但是web需要调用")
     @JavascriptInterface
     fun aesBase64DecodeToString(
         str: String, key: String, transformation: String, iv: String
     ): String? {
-        return createSymmetricCrypto(transformation, key, iv).decryptStr(str)
+        return rustJavaStringCall("aesBase64DecodeToString", str, key, transformation, iv)
     }
 
     /**
@@ -198,14 +189,11 @@ interface JsEncodeUtils {
      * @param transformation AES加密的方式
      * @param iv ECB模式的偏移向量
      */
-    @Deprecated(
-        "过于繁琐弃用",
-        ReplaceWith("createSymmetricCrypto(transformation, key, iv).decrypt(data)")
-    )
+    @Deprecated("过于繁琐弃用")
     fun aesEncodeToByteArray(
         data: String, key: String, transformation: String, iv: String
     ): ByteArray? {
-        return createSymmetricCrypto(transformation, key, iv).encrypt(data)
+        return rustJavaAnyCall("aesEncodeToByteArray", data, key, transformation, iv) as? ByteArray
     }
 
     /**
@@ -215,15 +203,12 @@ interface JsEncodeUtils {
      * @param transformation AES加密的方式
      * @param iv ECB模式的偏移向量
      */
-    @Deprecated(
-        "过于繁琐弃用,但是web需要调用",
-        ReplaceWith("createSymmetricCrypto(transformation, key, iv).decryptStr(data)")
-    )
+    @Deprecated("过于繁琐弃用,但是web需要调用")
     @JavascriptInterface
     fun aesEncodeToString(
         data: String, key: String, transformation: String, iv: String
     ): String? {
-        return createSymmetricCrypto(transformation, key, iv).decryptStr(data)
+        return rustJavaStringCall("aesEncodeToString", data, key, transformation, iv)
     }
 
     /**
@@ -233,14 +218,11 @@ interface JsEncodeUtils {
      * @param transformation AES加密的方式
      * @param iv ECB模式的偏移向量
      */
-    @Deprecated(
-        "过于繁琐弃用",
-        ReplaceWith("createSymmetricCrypto(transformation, key, iv).encryptBase64(data).toByteArray()")
-    )
+    @Deprecated("过于繁琐弃用")
     fun aesEncodeToBase64ByteArray(
         data: String, key: String, transformation: String, iv: String
     ): ByteArray? {
-        return createSymmetricCrypto(transformation, key, iv).encryptBase64(data).toByteArray()
+        return rustJavaStringCall("aesEncodeToBase64String", data, key, transformation, iv).toByteArray()
     }
 
     /**
@@ -250,15 +232,12 @@ interface JsEncodeUtils {
      * @param transformation AES加密的方式
      * @param iv ECB模式的偏移向量
      */
-    @Deprecated(
-        "过于繁琐弃用,但是web需要调用",
-        ReplaceWith("createSymmetricCrypto(transformation, key, iv).encryptBase64(data)")
-    )
+    @Deprecated("过于繁琐弃用,但是web需要调用")
     @JavascriptInterface
     fun aesEncodeToBase64String(
         data: String, key: String, transformation: String, iv: String
     ): String? {
-        return createSymmetricCrypto(transformation, key, iv).encryptBase64(data)
+        return rustJavaStringCall("aesEncodeToBase64String", data, key, transformation, iv)
     }
 
 
@@ -272,10 +251,7 @@ interface JsEncodeUtils {
      * @param iv Base64后的加盐
      * @return 加密后的Base64
      */
-    @Deprecated(
-        "过于繁琐弃用,但是web需要调用",
-        ReplaceWith("createSymmetricCrypto(transformation, key, iv).encryptBase64(data)")
-    )
+    @Deprecated("过于繁琐弃用,但是web需要调用")
     @JavascriptInterface
     fun aesEncodeArgsBase64Str(
         data: String,
@@ -284,52 +260,40 @@ interface JsEncodeUtils {
         padding: String,
         iv: String
     ): String? {
-        return createSymmetricCrypto("AES/${mode}/${padding}", key, iv).encryptBase64(data)
+        return rustJavaStringCall("aesEncodeToBase64String", data, key, "AES/${mode}/${padding}", iv)
     }
 
     /////DES
-    @Deprecated(
-        "过于繁琐弃用,但是web需要调用",
-        ReplaceWith("createSymmetricCrypto(transformation, key, iv).decryptStr(data)")
-    )
+    @Deprecated("过于繁琐弃用,但是web需要调用")
     @JavascriptInterface
     fun desDecodeToString(
         data: String, key: String, transformation: String, iv: String
     ): String? {
-        return createSymmetricCrypto(transformation, key, iv).decryptStr(data)
+        return rustJavaStringCall("desDecodeToString", data, key, transformation, iv)
     }
 
-    @Deprecated(
-        "过于繁琐弃用,但是web需要调用",
-        ReplaceWith("createSymmetricCrypto(transformation, key, iv).decryptStr(data)")
-    )
+    @Deprecated("过于繁琐弃用,但是web需要调用")
     @JavascriptInterface
     fun desBase64DecodeToString(
         data: String, key: String, transformation: String, iv: String
     ): String? {
-        return createSymmetricCrypto(transformation, key, iv).decryptStr(data)
+        return rustJavaStringCall("desBase64DecodeToString", data, key, transformation, iv)
     }
 
-    @Deprecated(
-        "过于繁琐弃用,但是web需要调用",
-        ReplaceWith("createSymmetricCrypto(transformation, key, iv).encrypt(data)")
-    )
+    @Deprecated("过于繁琐弃用,但是web需要调用")
     @JavascriptInterface
     fun desEncodeToString(
         data: String, key: String, transformation: String, iv: String
     ): String? {
-        return String(createSymmetricCrypto(transformation, key, iv).encrypt(data))
+        return rustJavaStringCall("desEncodeToString", data, key, transformation, iv)
     }
 
-    @Deprecated(
-        "过于繁琐弃用,但是web需要调用",
-        ReplaceWith("createSymmetricCrypto(transformation, key, iv).encryptBase64(data)")
-    )
+    @Deprecated("过于繁琐弃用,但是web需要调用")
     @JavascriptInterface
     fun desEncodeToBase64String(
         data: String, key: String, transformation: String, iv: String
     ): String? {
-        return createSymmetricCrypto(transformation, key, iv).encryptBase64(data)
+        return rustJavaStringCall("desEncodeToBase64String", data, key, transformation, iv)
     }
 
     //////3DES
@@ -343,10 +307,7 @@ interface JsEncodeUtils {
      * @param iv 加盐
      * @return 解密后的字符串
      */
-    @Deprecated(
-        "过于繁琐弃用,但是web需要调用",
-        ReplaceWith("createSymmetricCrypto(transformation, key, iv).decryptStr(data)")
-    )
+    @Deprecated("过于繁琐弃用,但是web需要调用")
     @JavascriptInterface
     fun tripleDESDecodeStr(
         data: String,
@@ -355,7 +316,7 @@ interface JsEncodeUtils {
         padding: String,
         iv: String
     ): String? {
-        return createSymmetricCrypto("DESede/${mode}/${padding}", key, iv).decryptStr(data)
+        return rustJavaStringCall("tripleDESDecodeStr", data, key, mode, padding, iv)
     }
 
     /**
@@ -368,10 +329,7 @@ interface JsEncodeUtils {
      * @param iv Base64后的加盐
      * @return 解密后的字符串
      */
-    @Deprecated(
-        "过于繁琐弃用,但是web需要调用",
-        ReplaceWith("createSymmetricCrypto(transformation, key, iv).decryptStr(data)")
-    )
+    @Deprecated("过于繁琐弃用,但是web需要调用")
     @JavascriptInterface
     fun tripleDESDecodeArgsBase64Str(
         data: String,
@@ -380,11 +338,7 @@ interface JsEncodeUtils {
         padding: String,
         iv: String
     ): String? {
-        return createSymmetricCrypto(
-            "DESede/${mode}/${padding}",
-            Base64.decode(key, Base64.NO_WRAP),
-            iv.encodeToByteArray()
-        ).decryptStr(data)
+        return rustJavaStringCall("tripleDESDecodeArgsBase64Str", data, key, mode, padding, iv)
     }
 
 
@@ -398,10 +352,7 @@ interface JsEncodeUtils {
      * @param iv 加盐
      * @return 加密后的Base64
      */
-    @Deprecated(
-        "过于繁琐弃用,但是web需要调用",
-        ReplaceWith("createSymmetricCrypto(transformation, key, iv).encryptBase64(data)")
-    )
+    @Deprecated("过于繁琐弃用,但是web需要调用")
     @JavascriptInterface
     fun tripleDESEncodeBase64Str(
         data: String,
@@ -410,8 +361,7 @@ interface JsEncodeUtils {
         padding: String,
         iv: String
     ): String? {
-        return createSymmetricCrypto("DESede/${mode}/${padding}", key, iv)
-            .encryptBase64(data)
+        return rustJavaStringCall("tripleDESEncodeBase64Str", data, key, mode, padding, iv)
     }
 
     /**
@@ -424,10 +374,7 @@ interface JsEncodeUtils {
      * @param iv Base64后的加盐
      * @return 加密后的Base64
      */
-    @Deprecated(
-        "过于繁琐弃用,但是web需要调用",
-        ReplaceWith("createSymmetricCrypto(transformation, key, iv).encryptBase64(data)")
-    )
+    @Deprecated("过于繁琐弃用,但是web需要调用")
     @JavascriptInterface
     fun tripleDESEncodeArgsBase64Str(
         data: String,
@@ -436,11 +383,7 @@ interface JsEncodeUtils {
         padding: String,
         iv: String
     ): String? {
-        return createSymmetricCrypto(
-            "DESede/${mode}/${padding}",
-            Base64.decode(key, Base64.NO_WRAP),
-            iv.encodeToByteArray()
-        ).encryptBase64(data)
+        return rustJavaStringCall("tripleDESEncodeArgsBase64Str", data, key, mode, padding, iv)
     }
 
 //******************消息摘要/散列消息鉴别码************************//
@@ -457,7 +400,7 @@ interface JsEncodeUtils {
         data: String,
         algorithm: String,
     ): String {
-        return DigestUtil.digester(algorithm).digestHex(data)
+        return rustJavaStringCall("digestHex", data, algorithm)
     }
 
     /**
@@ -472,7 +415,7 @@ interface JsEncodeUtils {
         data: String,
         algorithm: String,
     ): String {
-        return Base64.encodeToString(DigestUtil.digester(algorithm).digest(data), Base64.NO_WRAP)
+        return rustJavaStringCall("digestBase64Str", data, algorithm)
     }
 
     /**
@@ -490,7 +433,7 @@ interface JsEncodeUtils {
         algorithm: String,
         key: String
     ): String {
-        return HMac(algorithm, key.toByteArray()).digestHex(data)
+        return rustJavaStringCall("HMacHex", data, algorithm, key)
     }
 
     /**
@@ -508,11 +451,179 @@ interface JsEncodeUtils {
         algorithm: String,
         key: String
     ): String {
-        return Base64.encodeToString(
-            HMac(algorithm, key.toByteArray()).digest(data),
-            Base64.NO_WRAP
-        )
+        return rustJavaStringCall("HMacBase64", data, algorithm, key)
     }
 
 
+}
+
+private fun rustLocalString(script: String, rulePath: String): String {
+    if (!RustAnalyzerBridge.isAvailable) {
+        throw NoStackTraceException("Rust analyzer UniFFI binding is required for $rulePath")
+    }
+    return RustAnalyzerBridge.evalJsRaw(script = script, rulePath = rulePath)
+}
+
+private fun rustLocalAny(script: String, rulePath: String): Any? {
+    if (!RustAnalyzerBridge.isAvailable) {
+        throw NoStackTraceException("Rust analyzer UniFFI binding is required for $rulePath")
+    }
+    return RustAnalyzerBridge.evalJsAny(script = script, rulePath = rulePath)
+}
+
+private fun rustJsArg(value: String?): String {
+    return if (value == null) "null" else GSON.toJson(value)
+}
+
+private fun rustJsArg(value: ByteArray?): String {
+    return if (value == null) {
+        "null"
+    } else {
+        "{\"__javaBytesHex\":${GSON.toJson(value.toHexString())}}"
+    }
+}
+
+private fun ByteArray.toHexString(): String {
+    return joinToString(separator = "") { byte -> "%02x".format(byte.toInt() and 0xff) }
+}
+
+class RustSymmetricCrypto(
+    private val transformation: String,
+    private var keyExpr: String,
+    private var ivExpr: String
+) {
+    fun setIv(iv: ByteArray?): RustSymmetricCrypto {
+        ivExpr = rustJsArg(iv)
+        return this
+    }
+
+    fun encrypt(data: String): ByteArray? {
+        return symmetricAny("encrypt", rustJsArg(data)) as? ByteArray
+    }
+
+    fun encrypt(data: ByteArray): ByteArray? {
+        return symmetricAny("encrypt", rustJsArg(data)) as? ByteArray
+    }
+
+    fun encryptBase64(data: String): String {
+        return symmetricString("encryptBase64", rustJsArg(data))
+    }
+
+    fun encryptBase64(data: ByteArray): String {
+        return symmetricString("encryptBase64", rustJsArg(data))
+    }
+
+    fun encryptHex(data: String): String {
+        return symmetricString("encryptHex", rustJsArg(data))
+    }
+
+    fun encryptHex(data: ByteArray): String {
+        return symmetricString("encryptHex", rustJsArg(data))
+    }
+
+    fun decrypt(data: String): ByteArray? {
+        return symmetricAny("decrypt", rustJsArg(data)) as? ByteArray
+    }
+
+    fun decrypt(data: ByteArray): ByteArray? {
+        return symmetricAny("decrypt", rustJsArg(data)) as? ByteArray
+    }
+
+    fun decryptStr(data: String): String {
+        return symmetricString("decryptStr", rustJsArg(data))
+    }
+
+    fun decryptStr(data: ByteArray): String {
+        return symmetricString("decryptStr", rustJsArg(data))
+    }
+
+    private fun symmetricString(method: String, dataExpr: String): String {
+        return rustLocalString(script(method, dataExpr), "JsEncodeUtils.createSymmetricCrypto.$method")
+    }
+
+    private fun symmetricAny(method: String, dataExpr: String): Any? {
+        return rustLocalAny(script(method, dataExpr), "JsEncodeUtils.createSymmetricCrypto.$method")
+    }
+
+    private fun script(method: String, dataExpr: String): String {
+        return "java.createSymmetricCrypto(${GSON.toJson(transformation)}, $keyExpr, $ivExpr).$method($dataExpr)"
+    }
+}
+
+class RustAsymmetricCrypto(
+    private val transformation: String
+) {
+    private var publicKey: String = ""
+    private var privateKey: String = ""
+
+    fun setPublicKey(key: String?): RustAsymmetricCrypto {
+        publicKey = key.orEmpty()
+        return this
+    }
+
+    fun setPrivateKey(key: String?): RustAsymmetricCrypto {
+        privateKey = key.orEmpty()
+        return this
+    }
+
+    fun encryptBase64(data: String, usePublicKey: Boolean = true): String {
+        return asymmetricString("encryptBase64", data, usePublicKey)
+    }
+
+    fun encryptHex(data: String, usePublicKey: Boolean = true): String {
+        return asymmetricString("encryptHex", data, usePublicKey)
+    }
+
+    fun encrypt(data: String, usePublicKey: Boolean = true): String {
+        return asymmetricString("encrypt", data, usePublicKey)
+    }
+
+    fun decryptStr(data: String, usePublicKey: Boolean = true): String {
+        return asymmetricString("decryptStr", data, usePublicKey)
+    }
+
+    fun decrypt(data: String, usePublicKey: Boolean = true): String {
+        return asymmetricString("decrypt", data, usePublicKey)
+    }
+
+    private fun asymmetricString(method: String, data: String, usePublicKey: Boolean): String {
+        val script = "java.createAsymmetricCrypto(${GSON.toJson(transformation)})" +
+            ".setPublicKey(${GSON.toJson(publicKey)})" +
+            ".setPrivateKey(${GSON.toJson(privateKey)})" +
+            ".$method(${GSON.toJson(data)}, $usePublicKey)"
+        return rustLocalString(script, "JsEncodeUtils.createAsymmetricCrypto.$method")
+    }
+}
+
+class RustSign(
+    private val algorithm: String
+) {
+    private var publicKey: String = ""
+    private var privateKey: String = ""
+
+    fun setPublicKey(key: String?): RustSign {
+        publicKey = key.orEmpty()
+        return this
+    }
+
+    fun setPrivateKey(key: String?): RustSign {
+        privateKey = key.orEmpty()
+        return this
+    }
+
+    fun signHex(data: String): String {
+        return signString("signHex", data)
+    }
+
+    fun sign(data: String): String {
+        return signString("sign", data)
+    }
+
+    private fun signString(method: String, data: String): String {
+        val script = "java.createSign(${GSON.toJson(algorithm)})" +
+            ".setPublicKey(${GSON.toJson(publicKey)})" +
+            ".setPrivateKey(${GSON.toJson(privateKey)})" +
+            ".$method(${GSON.toJson(data)})"
+        return rustLocalString(script, "JsEncodeUtils.createSign.$method")
+    }
 }

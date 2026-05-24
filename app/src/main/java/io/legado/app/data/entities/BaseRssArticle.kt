@@ -1,7 +1,6 @@
 package io.legado.app.data.entities
 
 import io.legado.app.help.RuleBigDataHelp
-import io.legado.app.model.analyzeRule.RuleDataInterface
 import io.legado.app.utils.GSON
 
 interface BaseRssArticle : RuleDataInterface {

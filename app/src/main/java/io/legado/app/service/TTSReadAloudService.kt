@@ -54,7 +54,17 @@ class TTSReadAloudService : BaseReadAloudService() {
     private fun initTts() {
         ttsInitFinish = false
         val initGeneration = ++ttsInitGeneration
-        val engine = GSON.fromJsonObject<SelectItem<String>>(ReadAloud.ttsEngine).getOrNull()?.value
+        val ttsEngine = ReadAloud.ttsEngine
+        val engine = if (ttsEngine.isNullOrBlank()) {
+            null
+        } else {
+            GSON.fromJsonObject<SelectItem<String>>(ttsEngine).getOrElse {
+                throw NoStackTraceException(
+                    "TTSReadAloudService engine JSON is invalid for Rust analyzer state handoff: " +
+                        (it.localizedMessage ?: it::class.java.name)
+                )
+            }.value
+        }
         LogUtils.d(TAG, "initTts engine:$engine")
         textToSpeech = if (engine.isNullOrBlank()) {
             TextToSpeech(this) { status -> onTtsInit(initGeneration, status) }

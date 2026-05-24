@@ -6,6 +6,7 @@ import io.legado.app.data.entities.BaseSource
 import io.legado.app.data.entities.BookSource
 import io.legado.app.data.entities.HttpTTS
 import io.legado.app.data.entities.RssSource
+import io.legado.app.exception.NoStackTraceException
 import io.legado.app.help.source.exploreKinds
 import io.legado.app.model.webBook.WebBook
 import io.legado.app.utils.GSON
@@ -33,16 +34,25 @@ object BookSourceWebController {
     fun saveLoginData(postData: String?): ReturnData {
         val returnData = ReturnData()
         postData ?: return returnData.setErrorMsg("数据不能为空")
-        val body = GSON.fromJsonObject<Map<String, Any?>>(postData).getOrNull()
-            ?: return returnData.setErrorMsg("数据格式错误")
+        val body = GSON.fromJsonObject<Map<String, Any?>>(postData).getOrElse { error ->
+            throw NoStackTraceException(
+                "BookSourceWebController.saveLoginData JSON is invalid for Rust analyzer handoff: " +
+                        (error.localizedMessage ?: error::class.java.name)
+            )
+        }
         val source = getSource(body["type"]?.toString(), body["url"]?.toString())
             ?: return returnData.setErrorMsg("未找到书源")
         val loginInfo = body["loginInfo"]
         if (loginInfo != null) {
             source.putLoginInfo(GSON.toJson(loginInfo))
         }
-        kotlin.runCatching {
+        try {
             source.login()
+        } catch (error: Throwable) {
+            throw NoStackTraceException(
+                "BookSourceWebController Rust login failed for ${source.getTag()}: " +
+                        (error.localizedMessage ?: error::class.java.name)
+            )
         }
         return returnData.setData(
             linkedMapOf(

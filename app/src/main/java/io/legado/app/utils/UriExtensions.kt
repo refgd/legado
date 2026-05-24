@@ -13,10 +13,6 @@ import io.legado.app.constant.AppLog
 import io.legado.app.exception.NoStackTraceException
 import io.legado.app.lib.permission.Permissions
 import io.legado.app.lib.permission.PermissionsCompat
-import okhttp3.MediaType
-import okhttp3.RequestBody
-import okio.BufferedSink
-import okio.source
 import splitties.init.appCtx
 import java.io.File
 import java.io.FileInputStream
@@ -293,24 +289,6 @@ fun Uri.toWritePfd(context: Context): Result<ParcelFileDescriptor> {
             e.printOnDebug()
             AppLog.put("读取inputStream失败：${e.localizedMessage}", e)
             throw e
-        }
-    }
-}
-
-fun Uri.toRequestBody(contentType: MediaType? = null): RequestBody {
-    val uri = this
-    return object : RequestBody() {
-        override fun contentType() = contentType
-
-        override fun contentLength(): Long {
-            val length = uri.inputStream(appCtx).getOrThrow().available().toLong()
-            return if (length > 0) length else -1
-        }
-
-        override fun writeTo(sink: BufferedSink) {
-            uri.inputStream(appCtx).getOrThrow().source().use { source ->
-                sink.writeAll(source)
-            }
         }
     }
 }

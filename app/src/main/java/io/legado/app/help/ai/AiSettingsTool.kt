@@ -1,6 +1,7 @@
 package io.legado.app.help.ai
 
 import io.legado.app.constant.PreferKey
+import io.legado.app.exception.NoStackTraceException
 import io.legado.app.help.config.AppConfig
 import io.legado.app.utils.getPrefBoolean
 import io.legado.app.utils.getPrefInt
@@ -159,7 +160,9 @@ object AiSettingsTool {
     }
 
     private fun setSetting(arguments: JSONObject?): String {
-        if (arguments == null) return jsonError("missing arguments")
+        if (arguments == null) {
+            throw NoStackTraceException("AiSettingsTool set_app_setting missing arguments")
+        }
         val key = arguments.optString("key").trim()
         val value = arguments.opt("value")
         val result = applySetting(key, value)
@@ -170,12 +173,16 @@ object AiSettingsTool {
     }
 
     private fun setSettingsBatch(arguments: JSONObject?): String {
-        if (arguments == null) return jsonError("missing arguments")
-        val items = arguments.optJSONArray("items") ?: return jsonError("missing items")
+        if (arguments == null) {
+            throw NoStackTraceException("AiSettingsTool set_app_settings_batch missing arguments")
+        }
+        val items = arguments.optJSONArray("items")
+            ?: throw NoStackTraceException("AiSettingsTool set_app_settings_batch missing items")
         val results = JSONArray()
         var successCount = 0
         for (index in 0 until items.length()) {
-            val item = items.optJSONObject(index) ?: continue
+            val item = items.optJSONObject(index)
+                ?: throw NoStackTraceException("AiSettingsTool batch item $index is not an object")
             val key = item.optString("key").trim()
             val value = item.opt("value")
             val result = applySetting(key, value)
@@ -191,19 +198,22 @@ object AiSettingsTool {
     }
 
     private fun applySetting(key: String, rawValue: Any?): JSONObject {
-        val def = settingDefMap[key] ?: return JSONObject().apply {
-            put("ok", false)
-            put("key", key)
-            put("error", "unsupported key")
-        }
-        return runCatching {
+        val def = settingDefMap[key] ?: throw NoStackTraceException(
+            "AiSettingsTool unsupported setting key: $key"
+        )
+        try {
             when (def.type) {
                 "boolean" -> {
                     val value = when (rawValue) {
                         is Boolean -> rawValue
-                        is String -> rawValue.equals("true", true)
-                        is Number -> rawValue.toInt() != 0
-                        else -> throw IllegalArgumentException("invalid boolean")
+                        is String -> rawValue.toBooleanStrictOrNull()
+                            ?: throw NoStackTraceException("AiSettingsTool invalid boolean for $key: $rawValue")
+                        is Number -> when (rawValue.toInt()) {
+                            0 -> false
+                            1 -> true
+                            else -> throw NoStackTraceException("AiSettingsTool invalid boolean number for $key: $rawValue")
+                        }
+                        else -> throw NoStackTraceException("AiSettingsTool invalid boolean for $key")
                     }
                     appCtx.putPrefBoolean(key, value)
                 }
@@ -212,8 +222,8 @@ object AiSettingsTool {
                     val value = when (rawValue) {
                         is Number -> rawValue.toInt()
                         is String -> rawValue.toIntOrNull()
-                            ?: throw IllegalArgumentException("invalid int")
-                        else -> throw IllegalArgumentException("invalid int")
+                            ?: throw NoStackTraceException("AiSettingsTool invalid int for $key: $rawValue")
+                        else -> throw NoStackTraceException("AiSettingsTool invalid int for $key")
                     }
                     val limited = value.coerceIn(def.min ?: Int.MIN_VALUE, def.max ?: Int.MAX_VALUE)
                     appCtx.putPrefInt(key, limited)
@@ -222,22 +232,22 @@ object AiSettingsTool {
                 else -> {
                     val value = rawValue?.toString()?.trim().orEmpty()
                     if (def.values.isNotEmpty() && value !in def.values) {
-                        throw IllegalArgumentException("invalid enum")
+                        throw NoStackTraceException("AiSettingsTool invalid enum for $key: $value")
                     }
                     appCtx.putPrefString(key, value)
                 }
             }
-            JSONObject().apply {
+            return JSONObject().apply {
                 put("ok", true)
                 put("key", key)
                 put("value", readSettingValue(key, def.type))
             }
-        }.getOrElse {
-            JSONObject().apply {
-                put("ok", false)
-                put("key", key)
-                put("error", it.localizedMessage ?: "failed")
-            }
+        } catch (e: NoStackTraceException) {
+            throw e
+        } catch (e: Exception) {
+            throw NoStackTraceException(
+                "AiSettingsTool failed to apply setting $key: ${e.localizedMessage}"
+            )
         }
     }
 
@@ -280,12 +290,5 @@ object AiSettingsTool {
                 PreferKey.showReadRecord
             )
         }
-    }
-
-    private fun jsonError(message: String): String {
-        return JSONObject().apply {
-            put("ok", false)
-            put("error", message)
-        }.toString()
     }
 }

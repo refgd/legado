@@ -8,7 +8,7 @@ import io.legado.app.data.entities.BaseSource
 import io.legado.app.exception.NoStackTraceException
 import io.legado.app.help.CacheManager
 import io.legado.app.help.coroutine.Coroutine
-import io.legado.app.model.analyzeRule.AnalyzeRule.Companion.setCoroutineContext
+import io.legado.app.model.webBook.RustAnalyzerBridge
 import io.legado.app.ui.rss.read.RssJsExtensions
 import io.legado.app.utils.GSON
 import io.legado.app.utils.fromJsonObject
@@ -25,6 +25,15 @@ class WebJsExtensions(
 ): RssJsExtensions(activity, source, bookType) {
     private val callbackRef: WeakReference<Callback> = WeakReference(callback)
     private val webViewRef: WeakReference<WebView?> = WeakReference(webView)
+
+    private fun rustCryptoEval(script: String, rulePath: String): String {
+        val source = getSource() ?: throw NoStackTraceException("Rust $rulePath source cannot be null")
+        return RustAnalyzerBridge.evalJs(
+            source = source,
+            script = script,
+            rulePath = rulePath
+        )
+    }
 
     interface Callback {
         fun upConfig(config: String)
@@ -110,31 +119,41 @@ class WebJsExtensions(
                     ).toString()
                 }
                 "decryptStrAwait" -> {
-                    createSymmetricCrypto(
-                        p0 ?: throw NoStackTraceException("error transformation null"),
-                        p1 ?: throw NoStackTraceException("error key null"),
-                        p2
-                    ).decryptStr(p3 ?: throw NoStackTraceException("error data null"))
+                    val transformation = p0 ?: throw NoStackTraceException("error transformation null")
+                    val key = p1 ?: throw NoStackTraceException("error key null")
+                    val data = p3 ?: throw NoStackTraceException("error data null")
+                    rustCryptoEval(
+                        script = "java.createSymmetricCrypto(${GSON.toJson(transformation)}, ${GSON.toJson(key)}, ${GSON.toJson(p2 ?: "")}).decryptStr(${GSON.toJson(data)})",
+                        rulePath = "WebJsExtensions.decryptStrAwait"
+                    )
                 }
                 "encryptBase64Await" -> {
-                    createSymmetricCrypto(
-                        p0 ?: throw NoStackTraceException("error transformation null"),
-                        p1 ?: throw NoStackTraceException("error key null"),
-                        p2
-                    ).encryptBase64(p3 ?: throw NoStackTraceException("error data null"))
+                    val transformation = p0 ?: throw NoStackTraceException("error transformation null")
+                    val key = p1 ?: throw NoStackTraceException("error key null")
+                    val data = p3 ?: throw NoStackTraceException("error data null")
+                    rustCryptoEval(
+                        script = "java.createSymmetricCrypto(${GSON.toJson(transformation)}, ${GSON.toJson(key)}, ${GSON.toJson(p2 ?: "")}).encryptBase64(${GSON.toJson(data)})",
+                        rulePath = "WebJsExtensions.encryptBase64Await"
+                    )
                 }
                 "encryptHexAwait" -> {
-                    createSymmetricCrypto(
-                        p0 ?: throw NoStackTraceException("error transformation null"),
-                        p1 ?: throw NoStackTraceException("error key null"),
-                        p2
-                    ).encryptHex(p3 ?: throw NoStackTraceException("error data null"))
+                    val transformation = p0 ?: throw NoStackTraceException("error transformation null")
+                    val key = p1 ?: throw NoStackTraceException("error key null")
+                    val data = p3 ?: throw NoStackTraceException("error data null")
+                    rustCryptoEval(
+                        script = "java.createSymmetricCrypto(${GSON.toJson(transformation)}, ${GSON.toJson(key)}, ${GSON.toJson(p2 ?: "")}).encryptHex(${GSON.toJson(data)})",
+                        rulePath = "WebJsExtensions.encryptHexAwait"
+                    )
                 }
                 "createSignHexAwait" -> {
-                    createSign(p0 ?: throw NoStackTraceException("error algorithm null"))
-                        .setPublicKey(p1 ?: throw NoStackTraceException("error publicKey null"))
-                        .setPrivateKey(p2 ?: throw NoStackTraceException("error privateKey null"))
-                        .signHex(p3 ?: throw NoStackTraceException("error data null"))
+                    val algorithm = p0 ?: throw NoStackTraceException("error algorithm null")
+                    val publicKey = p1 ?: throw NoStackTraceException("error publicKey null")
+                    val privateKey = p2 ?: throw NoStackTraceException("error privateKey null")
+                    val data = p3 ?: throw NoStackTraceException("error data null")
+                    rustCryptoEval(
+                        script = "java.createSign(${GSON.toJson(algorithm)}).setPublicKey(${GSON.toJson(publicKey)}).setPrivateKey(${GSON.toJson(privateKey)}).signHex(${GSON.toJson(data)})",
+                        rulePath = "WebJsExtensions.createSignHexAwait"
+                    )
                 }
                 "downloadFileAwait" -> {
                     downloadFile(p0 ?: throw NoStackTraceException("error url null"))

@@ -1,11 +1,13 @@
 package io.legado.app.help.ai
 
 import io.legado.app.BuildConfig
-import io.legado.app.help.http.newCallResponse
-import io.legado.app.help.http.okHttpClient
-import io.legado.app.help.http.postJson
+import io.legado.app.constant.BookSourceType
+import io.legado.app.data.entities.BookSource
+import io.legado.app.exception.NoStackTraceException
+import io.legado.app.model.webBook.RustAnalyzerBridge
+import io.legado.app.model.webBook.RustRawFetchResult
 import io.legado.app.ui.main.ai.AiMcpServerConfig
-import okhttp3.Response
+import io.legado.app.utils.GSON
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.Locale
@@ -55,16 +57,18 @@ object AiMcpClient {
                 }
                 return@forEach
             }
-            val tools = runCatching {
-                val localNames = usedNames.toMutableSet()
+            val localNames = usedNames.toMutableSet()
+            val tools = try {
                 listTools(server).mapIndexed { index, descriptor ->
                     val alias = buildToolAlias(server, descriptor.name, index, localNames)
                     localNames += alias
                     buildResolvedTool(server, alias, descriptor)
                 }
-            }.getOrElse {
+            } catch (e: Exception) {
                 sessionMap.remove(server.id)
-                emptyList()
+                throw NoStackTraceException(
+                    "AiMcpClient failed to resolve tools for ${server.name}: ${e.localizedMessage}"
+                )
             }
             toolCache[server.id] = CachedTools(
                 fingerprint = fingerprint,
@@ -92,20 +96,26 @@ object AiMcpClient {
                 body = jsonRpcRequest("tools/list", params, requestId),
                 requestId = requestId
             )
-            val result = response.optJSONObject("result") ?: JSONObject()
-            val toolArray = result.optJSONArray("tools") ?: JSONArray()
+            val result = response.optJSONObject("result")
+                ?: throw NoStackTraceException("AiMcpClient tools/list missing result for ${server.name}")
+            val toolArray = result.optJSONArray("tools")
+                ?: throw NoStackTraceException("AiMcpClient tools/list missing tools array for ${server.name}")
             for (index in 0 until toolArray.length()) {
-                val tool = toolArray.optJSONObject(index) ?: continue
+                val tool = toolArray.optJSONObject(index)
+                    ?: throw NoStackTraceException("AiMcpClient tools/list item $index is not an object for ${server.name}")
                 tools += McpToolDescriptor(
-                    name = tool.optString("name"),
+                    name = tool.optString("name").ifBlank {
+                        throw NoStackTraceException("AiMcpClient tools/list item $index has blank name for ${server.name}")
+                    },
                     title = tool.optString("title"),
                     description = tool.optString("description"),
-                    inputSchema = tool.optJSONObject("inputSchema") ?: emptyObjectSchema()
+                    inputSchema = tool.optJSONObject("inputSchema")
+                        ?: throw NoStackTraceException("AiMcpClient tools/list item $index missing inputSchema for ${server.name}")
                 )
             }
             cursor = result.optString("nextCursor").takeIf { it.isNotBlank() }
         } while (cursor != null)
-        return tools.filter { it.name.isNotBlank() }
+        return tools
     }
 
     private fun buildResolvedTool(
@@ -164,7 +174,8 @@ object AiMcpClient {
             ),
             requestId = requestId
         )
-        return (response.optJSONObject("result") ?: JSONObject()).toString()
+        return response.optJSONObject("result")?.toString()
+            ?: throw NoStackTraceException("AiMcpClient tools/call missing result for ${server.name}: $toolName")
     }
 
     private suspend fun ensureSession(server: AiMcpServerConfig): SessionState {
@@ -189,51 +200,43 @@ object AiMcpClient {
             },
             id = requestId
         )
-        val response = okHttpClient.newCallResponse {
-            url(server.endpoint)
-            addHeader("Accept", "application/json, text/event-stream")
-            addHeader("Content-Type", "application/json")
-            server.apiKey.trim().takeIf { it.isNotBlank() }?.let {
-                addHeader("Authorization", "Bearer $it")
-            }
-            postJson(initializeBody.toString())
-        }
-        response.use { rawResponse ->
-            val rpcResponse = readJsonRpcResponse(rawResponse, requestId)
-            val result = rpcResponse.optJSONObject("result") ?: JSONObject()
-            val session = SessionState(
-                sessionId = rawResponse.header(HEADER_SESSION_ID),
-                protocolVersion = result.optString("protocolVersion").ifBlank { PROTOCOL_VERSION },
-                configFingerprint = fingerprint
-            )
-            sessionMap[server.id] = session
-            toolCache.remove(server.id)
-            sendInitializedNotification(server, session)
-            return session
-        }
+        val rawResponse = postJsonRpcRaw(
+            server = server,
+            session = null,
+            body = initializeBody.toString(),
+            rulePath = "AiMcpClient.initialize"
+        )
+        val rpcResponse = readJsonRpcResponse(rawResponse, requestId)
+        val result = rpcResponse.optJSONObject("result")
+            ?: throw NoStackTraceException("AiMcpClient initialize missing result for ${server.name}")
+        val session = SessionState(
+            sessionId = rawResponse.header(HEADER_SESSION_ID).takeIf { it.isNotBlank() },
+            protocolVersion = result.optString("protocolVersion").ifBlank { PROTOCOL_VERSION },
+            configFingerprint = fingerprint
+        )
+        sessionMap[server.id] = session
+        toolCache.remove(server.id)
+        sendInitializedNotification(server, session)
+        return session
     }
 
     private suspend fun sendInitializedNotification(
         server: AiMcpServerConfig,
         session: SessionState
     ) {
-        runCatching {
-            okHttpClient.newCallResponse {
-                url(server.endpoint)
-                addHeader("Accept", "application/json, text/event-stream")
-                addHeader("Content-Type", "application/json")
-                addHeader(HEADER_PROTOCOL_VERSION, session.protocolVersion)
-                session.sessionId?.let { addHeader(HEADER_SESSION_ID, it) }
-                server.apiKey.trim().takeIf { it.isNotBlank() }?.let {
-                    addHeader("Authorization", "Bearer $it")
-                }
-                postJson(
-                    JSONObject().apply {
-                        put("jsonrpc", "2.0")
-                        put("method", "notifications/initialized")
-                    }.toString()
-                )
-            }.close()
+        val rawResponse = postJsonRpcRaw(
+            server = server,
+            session = session,
+            body = JSONObject().apply {
+                put("jsonrpc", "2.0")
+                put("method", "notifications/initialized")
+            }.toString(),
+            rulePath = "AiMcpClient.initialized"
+        )
+        if (rawResponse.code !in 200..299) {
+            throw NoStackTraceException(
+                "AiMcpClient initialized notification failed for ${server.name}: ${rawResponse.code} ${rawResponse.message}"
+            )
         }
     }
 
@@ -244,52 +247,78 @@ object AiMcpClient {
         requestId: String
     ): JSONObject {
         return runCatching {
-            okHttpClient.newCallResponse {
-                url(server.endpoint)
-                addHeader("Accept", "application/json, text/event-stream")
-                addHeader("Content-Type", "application/json")
-                addHeader(HEADER_PROTOCOL_VERSION, session.protocolVersion)
-                session.sessionId?.let { addHeader(HEADER_SESSION_ID, it) }
-                server.apiKey.trim().takeIf { it.isNotBlank() }?.let {
-                    addHeader("Authorization", "Bearer $it")
-                }
-                postJson(body.toString())
-            }.use { rawResponse ->
-                readJsonRpcResponse(rawResponse, requestId)
-            }
+            readJsonRpcResponse(
+                postJsonRpcRaw(
+                    server = server,
+                    session = session,
+                    body = body.toString(),
+                    rulePath = "AiMcpClient.postJsonRpc"
+                ),
+                requestId
+            )
         }.recoverCatching {
             sessionMap.remove(server.id)
             toolCache.remove(server.id)
             val freshSession = ensureSession(server)
-            okHttpClient.newCallResponse {
-                url(server.endpoint)
-                addHeader("Accept", "application/json, text/event-stream")
-                addHeader("Content-Type", "application/json")
-                addHeader(HEADER_PROTOCOL_VERSION, freshSession.protocolVersion)
-                freshSession.sessionId?.let { addHeader(HEADER_SESSION_ID, it) }
-                server.apiKey.trim().takeIf { it.isNotBlank() }?.let {
-                    addHeader("Authorization", "Bearer $it")
-                }
-                postJson(body.toString())
-            }.use { rawResponse ->
-                readJsonRpcResponse(rawResponse, requestId)
-            }
+            readJsonRpcResponse(
+                postJsonRpcRaw(
+                    server = server,
+                    session = freshSession,
+                    body = body.toString(),
+                    rulePath = "AiMcpClient.postJsonRpc.retry"
+                ),
+                requestId
+            )
         }.getOrThrow()
     }
 
-    private fun readJsonRpcResponse(response: Response, requestId: String): JSONObject {
-        val body = response.body ?: throw IllegalStateException("MCP empty response body")
-        if (!response.isSuccessful) {
-            val payload = body.string()
+    private fun postJsonRpcRaw(
+        server: AiMcpServerConfig,
+        session: SessionState?,
+        body: String,
+        rulePath: String
+    ): RustRawFetchResult {
+        val headers = buildMap {
+            put("Accept", "application/json, text/event-stream")
+            put("Content-Type", "application/json")
+            session?.let {
+                put(HEADER_PROTOCOL_VERSION, it.protocolVersion)
+                it.sessionId?.let { sessionId -> put(HEADER_SESSION_ID, sessionId) }
+            }
+            server.apiKey.trim().takeIf { it.isNotBlank() }?.let {
+                put("Authorization", "Bearer $it")
+            }
+        }
+        return RustAnalyzerBridge.fetchRawResponse(
+            source = BookSource(
+                bookSourceUrl = server.endpoint,
+                bookSourceName = "AI MCP ${server.name}",
+                bookSourceType = BookSourceType.default,
+                header = GSON.toJson(headers)
+            ),
+            url = "${server.endpoint},${
+                GSON.toJson(
+                    mapOf(
+                        "method" to "POST",
+                        "body" to body
+                    )
+                )
+            }",
+            rulePath = rulePath
+        )
+    }
+
+    private fun readJsonRpcResponse(response: RustRawFetchResult, requestId: String): JSONObject {
+        val payload = response.body.toString(Charsets.UTF_8)
+        if (response.code !in 200..299) {
             throw IllegalStateException(
                 "MCP ${response.code} ${response.message}: ${extractJsonRpcError(payload)}"
             )
         }
-        val payload = body.string()
         if (payload.isBlank()) {
-            return JSONObject()
+            throw NoStackTraceException("AiMcpClient JSON-RPC response is blank for request $requestId")
         }
-        val isSse = response.header("Content-Type").orEmpty().contains("text/event-stream")
+        val isSse = response.header("Content-Type").contains("text/event-stream", ignoreCase = true)
         val rpcResponse = if (isSse) {
             parseSsePayload(payload, requestId)
         } else {
@@ -332,8 +361,8 @@ object AiMcpClient {
         throw IllegalStateException("MCP SSE response missing matching id")
     }
 
-    private fun sanitizeSchema(schema: JSONObject?): JSONObject {
-        val result = schema?.let { JSONObject(it.toString()) } ?: JSONObject()
+    private fun sanitizeSchema(schema: JSONObject): JSONObject {
+        val result = JSONObject(schema.toString())
         if (result.optString("type").isBlank()) {
             result.put("type", "object")
         }
@@ -341,14 +370,6 @@ object AiMcpClient {
             result.put("properties", JSONObject())
         }
         return result
-    }
-
-    private fun emptyObjectSchema(): JSONObject {
-        return JSONObject().apply {
-            put("type", "object")
-            put("properties", JSONObject())
-            put("additionalProperties", true)
-        }
     }
 
     private fun buildToolAlias(
@@ -399,5 +420,14 @@ object AiMcpClient {
         return runCatching {
             JSONObject(payload).optJSONObject("error")?.optString("message")
         }.getOrNull().orEmpty().ifBlank { payload }
+    }
+
+    private fun RustRawFetchResult.header(name: String): String {
+        headers[name]?.let { return it }
+        headers.entries.firstOrNull { it.key.equals(name, ignoreCase = true) }?.let { return it.value }
+        headersList.firstOrNull {
+            it.size >= 2 && it[0].equals(name, ignoreCase = true)
+        }?.let { return it[1] }
+        return ""
     }
 }

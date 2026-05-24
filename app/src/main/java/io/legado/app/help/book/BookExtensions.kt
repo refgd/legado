@@ -4,9 +4,6 @@ package io.legado.app.help.book
 
 import android.net.Uri
 import androidx.core.net.toUri
-import com.script.buildScriptBindings
-import com.script.rhino.RhinoScriptEngine
-import io.legado.app.constant.AppLog
 import io.legado.app.constant.AppPattern
 import io.legado.app.constant.BookSourceType
 import io.legado.app.constant.BookType
@@ -18,6 +15,7 @@ import io.legado.app.exception.NoStackTraceException
 import io.legado.app.help.RuleBigDataHelp
 import io.legado.app.help.config.AppConfig
 import io.legado.app.model.localBook.LocalBook
+import io.legado.app.model.webBook.RustAnalyzerBridge
 import io.legado.app.utils.FileDoc
 import io.legado.app.utils.GSON
 import io.legado.app.utils.MD5Utils
@@ -324,16 +322,19 @@ fun Book.getExportFileName(
     if (jsStr.isNullOrBlank()) {
         return "$name 作者：${getRealAuthor()}.$suffix"
     }
-    val bindings = buildScriptBindings { bindings ->
-        bindings["epubIndex"] = ""// 兼容老版本,修复可能存在的错误
-        bindings["name"] = name
-        bindings["author"] = getRealAuthor()
-    }
     return kotlin.runCatching {
-        RhinoScriptEngine.eval(jsStr, bindings).toString() + "." + suffix
-    }.onFailure {
-        AppLog.put("导出书名规则错误,使用默认规则\n${it.localizedMessage}", it)
-    }.getOrDefault("$name 作者：${getRealAuthor()}.$suffix")
+        RustAnalyzerBridge.evalJsRaw(
+            script = """
+                var name = ${GSON.toJson(name)};
+                var author = ${GSON.toJson(getRealAuthor())};
+                var epubIndex = "";
+                $jsStr
+            """.trimIndent(),
+            rulePath = "Book.getExportFileName"
+        ) + "." + suffix
+    }.getOrElse {
+        throw NoStackTraceException("Book export filename Rust JavaScript failed: ${it.localizedMessage ?: it}")
+    }
 }
 
 fun Book.getLiteralExportFileName(
@@ -371,16 +372,19 @@ fun Book.getExportFileName(
     if (jsStr.isNullOrBlank()) {
         return default
     }
-    val bindings = buildScriptBindings { bindings ->
-        bindings["name"] = name
-        bindings["author"] = getRealAuthor()
-        bindings["epubIndex"] = epubIndex
-    }
     return kotlin.runCatching {
-        RhinoScriptEngine.eval(jsStr, bindings).toString() + "." + suffix
-    }.onFailure {
-        AppLog.put("导出书名规则错误,使用默认规则\n${it.localizedMessage}", it)
-    }.getOrDefault(default).normalizeFileName()
+        RustAnalyzerBridge.evalJsRaw(
+            script = """
+                var name = ${GSON.toJson(name)};
+                var author = ${GSON.toJson(getRealAuthor())};
+                var epubIndex = $epubIndex;
+                $jsStr
+            """.trimIndent(),
+            rulePath = "Book.getExportFileName.part"
+        ) + "." + suffix
+    }.getOrElse {
+        throw NoStackTraceException("Book part export filename Rust JavaScript failed: ${it.localizedMessage ?: it}")
+    }.normalizeFileName()
 }
 
 // 根据当前日期计算章节总数
@@ -402,13 +406,14 @@ fun Book.readSimulating(): Boolean {
 }
 
 fun tryParesExportFileName(jsStr: String): Boolean {
-    val bindings = buildScriptBindings { bindings ->
-        bindings["name"] = "name"
-        bindings["author"] = "author"
-        bindings["epubIndex"] = "epubIndex"
-    }
-    return runCatching {
-        RhinoScriptEngine.eval(jsStr, bindings)
-        true
-    }.getOrDefault(false)
+    RustAnalyzerBridge.evalJsRaw(
+        script = """
+            var name = "name";
+            var author = "author";
+            var epubIndex = "epubIndex";
+            $jsStr
+        """.trimIndent(),
+        rulePath = "Book.tryParesExportFileName"
+    )
+    return true
 }

@@ -38,8 +38,7 @@ import io.legado.app.help.coroutine.Coroutine
 import io.legado.app.help.exoplayer.ExoPlayerHelper
 import io.legado.app.help.glide.ImageLoader
 import io.legado.app.model.AudioPlay
-import io.legado.app.model.analyzeRule.AnalyzeUrl
-import io.legado.app.model.analyzeRule.AnalyzeUrl.Companion.getMediaItem
+import io.legado.app.model.webBook.RustAnalyzerBridge
 import io.legado.app.receiver.MediaButtonReceiver
 import io.legado.app.ui.book.audio.AudioPlayActivity
 import io.legado.app.utils.activityPendingIntent
@@ -238,20 +237,21 @@ class AudioPlayService : BaseService(),
             if (url.isJsonArray()) {
                 val mediaSource = ExoPlayerHelper.getMediaSource(this@AudioPlayService, url)
                 if (mediaSource ==  null) {
-                    NoStackTraceException("url格式错误")
-                    return@execute
+                    throw NoStackTraceException("AudioPlayService Rust media JSON returned invalid media source")
                 }
                 exoPlayer.setMediaSource(mediaSource)
                 position = 0
             } else {
-                val analyzeUrl = AnalyzeUrl(
-                    url,
-                    source = AudioPlay.bookSource,
-                    ruleData = book,
-                    chapter = AudioPlay.durChapter,
-                    coroutineContext = coroutineContext
+                val source = AudioPlay.bookSource
+                    ?: throw NoStackTraceException(getString(R.string.book_source_not_found))
+                exoPlayer.setMediaItem(
+                    RustAnalyzerBridge.resolveMediaItem(
+                        url = url,
+                        source = source,
+                        baseUrl = AudioPlay.durChapter?.baseUrl.orEmpty(),
+                        rulePath = "AudioPlayService.play"
+                    )
                 )
-                exoPlayer.setMediaItem(analyzeUrl.getMediaItem())
             }
             exoPlayer.playWhenReady = true
             //获取片头设定
@@ -260,9 +260,12 @@ class AudioPlayService : BaseService(),
             exoPlayer.seekTo(playtime)
             exoPlayer.prepare()
         }.onError {
-            AppLog.put("播放出错\n${it.localizedMessage}", it)
             toastOnUi("$url ${it.localizedMessage}")
             stopSelf()
+            throw NoStackTraceException(
+                "AudioPlayService Rust media play failed for $url: " +
+                        (it.localizedMessage ?: it::class.java.name)
+            )
         }
     }
 

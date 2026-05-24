@@ -1,6 +1,5 @@
 package io.legado.app.model
 
-import io.legado.app.constant.AppConst
 import io.legado.app.data.appDb
 import io.legado.app.data.entities.BookSource
 import io.legado.app.data.entities.ReplaceRule
@@ -8,11 +7,9 @@ import io.legado.app.data.entities.RssSource
 import io.legado.app.data.entities.RuleSub
 import io.legado.app.exception.NoStackTraceException
 import io.legado.app.help.book.ContentProcessor
-import io.legado.app.help.http.decompressed
-import io.legado.app.help.http.newCallResponseBody
-import io.legado.app.help.http.okHttpClient
 import io.legado.app.help.source.SourceHelp
 import io.legado.app.utils.GSON
+import io.legado.app.utils.RustRemoteFetch
 import io.legado.app.utils.fromJsonArray
 import java.util.concurrent.ConcurrentHashMap
 
@@ -34,14 +31,7 @@ object RuleUpdate {
             appDb.ruleSubDao.update(ruleSub)
         }
         var upRules = false
-        okHttpClient.newCallResponseBody {
-            if (url.endsWith("#requestWithoutUA")) {
-                url(url.substringBeforeLast("#requestWithoutUA"))
-                header(AppConst.UA_NAME, "null")
-            } else {
-                url(url)
-            }
-        }.decompressed().byteStream().use {
+        RustRemoteFetch.bytes(url, "RuleUpdate.cacheSource").body.inputStream().use {
             when (type) {
                 0 -> GSON.fromJsonArray<BookSource>(it).getOrThrow().let { lists ->
                     val source = lists.firstOrNull() ?: return@let

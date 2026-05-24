@@ -10,7 +10,7 @@ import io.legado.app.exception.NoStackTraceException
 import io.legado.app.help.AppWebDav
 import io.legado.app.help.config.AppConfig
 import io.legado.app.lib.webdav.Authorization
-import io.legado.app.model.analyzeRule.CustomUrl
+import io.legado.app.utils.CustomUrl
 import io.legado.app.model.localBook.LocalBook
 import io.legado.app.model.remote.RemoteBook
 import io.legado.app.model.remote.RemoteBookWebDav

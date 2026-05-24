@@ -5,6 +5,7 @@ import io.legado.app.constant.EventBus
 import io.legado.app.data.appDb
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookGroup
+import io.legado.app.exception.NoStackTraceException
 import io.legado.app.help.book.BookHelp
 import io.legado.app.help.book.BookTagHelper
 import io.legado.app.model.webBook.WebBook
@@ -504,41 +505,31 @@ object AiBookshelfTool {
     private fun getBookInfo(arguments: JSONObject?): String {
         val books = resolveBooks(arguments, appDb.bookDao.all)
         val book = books.singleOrNull() ?: resolveBook(arguments)
+        if (book == null && books.isEmpty()) {
+            throw NoStackTraceException("AiBookshelfTool book info target not found")
+        }
         return JSONObject().apply {
-            put("ok", book != null || books.isNotEmpty())
-            if (book == null && books.isEmpty()) {
-                put("error", "未找到书籍")
-            } else {
-                book?.let { put("book", detailedBookToJson(it)) }
-                put("books", JSONArray().apply {
-                    (if (books.isNotEmpty()) books else listOfNotNull(book)).forEach {
-                        put(detailedBookToJson(it))
-                    }
-                })
-            }
+            put("ok", true)
+            book?.let { put("book", detailedBookToJson(it)) }
+            put("books", JSONArray().apply {
+                (if (books.isNotEmpty()) books else listOfNotNull(book)).forEach {
+                    put(detailedBookToJson(it))
+                }
+            })
         }.toString()
     }
 
     private fun setBookGroup(arguments: JSONObject?): String {
         val targets = resolveBooks(arguments, appDb.bookDao.all)
         if (targets.isEmpty()) {
-            return JSONObject().apply {
-                put("ok", false)
-                put("error", "未找到书籍")
-            }.toString()
+            throw NoStackTraceException("AiBookshelfTool set group target books not found")
         }
         val groupName = arguments?.optString("groupName")?.trim().orEmpty()
         if (groupName.isBlank()) {
-            return JSONObject().apply {
-                put("ok", false)
-                put("error", "groupName 不能为空")
-            }.toString()
+            throw NoStackTraceException("AiBookshelfTool set group missing groupName")
         }
         val group = ensureGroup(groupName)
-            ?: return JSONObject().apply {
-                put("ok", false)
-                put("error", "分组数量已达上限，无法创建新分组")
-            }.toString()
+            ?: throw NoStackTraceException("AiBookshelfTool group limit reached")
         val mode = arguments?.optString("mode")?.trim().orEmpty().ifBlank { "add" }
         val updatedBooks = JSONArray()
         targets.forEach { book ->
@@ -694,10 +685,7 @@ object AiBookshelfTool {
     private fun setBookTags(arguments: JSONObject?): String {
         val targets = resolveBooks(arguments, appDb.bookDao.all)
         if (targets.isEmpty()) {
-            return JSONObject().apply {
-                put("ok", false)
-                put("error", "未找到书籍")
-            }.toString()
+            throw NoStackTraceException("AiBookshelfTool set tags target books not found")
         }
         val tags = arguments?.optJSONArray("tags")?.let { array ->
             buildList {
@@ -707,10 +695,7 @@ object AiBookshelfTool {
             }
         }.orEmpty().distinct()
         if (tags.isEmpty()) {
-            return JSONObject().apply {
-                put("ok", false)
-                put("error", "tags 不能为空")
-            }.toString()
+            throw NoStackTraceException("AiBookshelfTool set tags missing tags")
         }
         val mode = arguments?.optString("mode")?.trim().orEmpty().ifBlank { "add" }
         val updatedBooks = JSONArray()
@@ -740,7 +725,7 @@ object AiBookshelfTool {
 
     private suspend fun listBookChapters(arguments: JSONObject?): String = withContext(IO) {
         val book = resolveBook(arguments)
-            ?: return@withContext errorJson("未找到书籍")
+            ?: throw NoStackTraceException("AiBookshelfTool list chapters target book not found")
         val keyword = arguments?.optString("keyword")?.trim().orEmpty()
         val limit = (arguments?.optInt("limit", 80) ?: 80).coerceIn(1, 200)
         val chapters = if (keyword.isBlank()) {
@@ -757,7 +742,7 @@ object AiBookshelfTool {
                         put("index", chapter.index)
                         put("title", chapter.title)
                         put("volume", chapter.tag ?: "")
-                        put("url", chapter.url ?: "")
+                        put("url", chapter.url)
                         put("cached", BookHelp.hasContent(book, chapter))
                     })
                 }
@@ -767,16 +752,20 @@ object AiBookshelfTool {
 
     private suspend fun readBookChapterContent(arguments: JSONObject?): String = withContext(IO) {
         val book = resolveBook(arguments)
-            ?: return@withContext errorJson("未找到书籍")
+            ?: throw NoStackTraceException("AiBookshelfTool read chapter target book not found")
         val chapter = resolveChapter(book, arguments)
-            ?: return@withContext errorJson("未找到章节")
+            ?: throw NoStackTraceException("AiBookshelfTool read chapter target chapter not found")
         val content = BookHelp.getContent(book, chapter)
-            ?: runCatching {
+            ?: try {
                 val source = appDb.bookSourceDao.getBookSource(book.origin)
                     ?: throw IllegalStateException("未找到书源")
                 WebBook.getContentAwait(source, book, chapter)
-            }.getOrNull()
-            ?: return@withContext errorJson("正文未缓存且读取失败")
+            } catch (error: Throwable) {
+                throw NoStackTraceException(
+                    "AiBookshelfTool Rust content failed for ${book.name}-${chapter.title}: " +
+                        (error.localizedMessage ?: error.toString())
+                )
+            }
         val maxChars = (arguments?.optInt("maxChars", 4000) ?: 4000).coerceIn(200, 20000)
         val normalized = content.replace(Regex("\\s+"), " ").trim()
         successJson().apply {
@@ -818,7 +807,12 @@ object AiBookshelfTool {
         arguments?.optString("bookUrl")?.trim()?.takeIf { it.isNotBlank() }?.let(urls::add)
         if (urls.isNotEmpty()) {
             val urlSet = urls.toSet()
-            return scopedBooks.filter { it.bookUrl in urlSet }
+            val matches = scopedBooks.filter { it.bookUrl in urlSet }
+            val missing = urlSet - matches.map { it.bookUrl }.toSet()
+            if (missing.isNotEmpty()) {
+                throw NoStackTraceException("AiBookshelfTool target book URLs not found: ${missing.joinToString()}")
+            }
+            return matches
         }
         val names = mutableListOf<String>()
         arguments?.optJSONArray("names")?.let { array ->
@@ -973,11 +967,8 @@ object AiBookshelfTool {
         return JSONObject().apply { put("ok", true) }
     }
 
-    private fun errorJson(message: String): String {
-        return JSONObject().apply {
-            put("ok", false)
-            put("error", message)
-        }.toString()
+    private fun errorJson(message: String): Nothing {
+        throw NoStackTraceException("AiBookshelfTool $message")
     }
 
     private fun bookToJson(book: Book): JSONObject {

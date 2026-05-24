@@ -30,6 +30,7 @@ import io.legado.app.data.entities.RuleSub
 import io.legado.app.data.entities.SearchKeyword
 import io.legado.app.data.entities.Server
 import io.legado.app.data.entities.TxtTocRule
+import io.legado.app.exception.NoStackTraceException
 import io.legado.app.help.DirectLinkUpload
 import io.legado.app.help.LauncherIconHelp
 import io.legado.app.help.book.isLocal
@@ -206,18 +207,18 @@ object Restore {
                 mergeReadRecordDaily(record)
             }
         }
-        File(path, "servers.json").takeIf {
-            it.exists()
-        }?.runCatching {
-            var json = readText()
+        File(path, "servers.json").takeIf { it.exists() }?.let {
+            var json = it.readText()
             if (!json.isJsonArray()) {
                 json = aes.decryptStr(json)
             }
-            GSON.fromJsonArray<Server>(json).getOrNull()?.let {
-                appDb.serverDao.insert(*it.toTypedArray())
+            val servers: List<Server> = GSON.fromJsonArray<Server>(json).getOrElse { error ->
+                throw NoStackTraceException(
+                    "Restore servers JSON is invalid for Rust analyzer state handoff: " +
+                        (error.localizedMessage ?: error::class.java.name)
+                )
             }
-        }?.onFailure {
-            AppLog.put("恢复服务器配置出错\n${it.localizedMessage}", it)
+            appDb.serverDao.insert(*servers.toTypedArray())
         }
         File(path, DirectLinkUpload.ruleFileName).takeIf {
             it.exists()
@@ -284,17 +285,15 @@ object Restore {
                 if (BackupConfig.keyIsNotIgnore(key)) {
                     when (key) {
                         PreferKey.webDavPassword -> {
-                            kotlin.runCatching {
+                            val decrypted = runCatching {
                                 aes.decryptStr(value.toString())
-                            }.getOrNull()?.let {
-                                edit.putString(key, it)
-                            } ?: let {
-                                if (appCtx.getPrefString(PreferKey.webDavPassword)
-                                        .isNullOrBlank()
-                                ) {
-                                    edit.putString(key, value.toString())
-                                }
+                            }.getOrElse {
+                                throw NoStackTraceException(
+                                    "Restore WebDAV password is invalid for Rust analyzer state handoff: " +
+                                        (it.localizedMessage ?: it::class.java.name)
+                                )
                             }
+                            edit.putString(key, decrypted)
                         }
 
                         else -> when (value) {

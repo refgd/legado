@@ -12,7 +12,7 @@ import io.legado.app.base.adapter.RecyclerAdapter
 import io.legado.app.data.entities.RssSource
 import io.legado.app.databinding.ItemRssBinding
 import io.legado.app.help.glide.ImageLoader
-import io.legado.app.help.glide.OkHttpModelLoader
+import io.legado.app.help.glide.RustImageModelLoader
 import io.legado.app.utils.showPopupMenu
 import splitties.views.onLongClick
 
@@ -36,7 +36,7 @@ class RssAdapter(
         binding.apply {
             tvName.text = item.sourceName
             val options = RequestOptions()
-                .set(OkHttpModelLoader.sourceOriginOption, item.sourceUrl)
+                .set(RustImageModelLoader.sourceOriginOption, item.sourceUrl)
             ImageLoader.load(fragment, lifecycle, item.sourceIcon)
                 .apply(options)
                 .centerCrop()

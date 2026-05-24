@@ -15,6 +15,7 @@ import io.legado.app.base.adapter.RecyclerAdapter
 import io.legado.app.data.entities.HttpTTS
 import io.legado.app.databinding.DialogRecyclerViewBinding
 import io.legado.app.databinding.ItemSourceImportBinding
+import io.legado.app.exception.NoStackTraceException
 import io.legado.app.lib.theme.primaryColor
 import io.legado.app.ui.widget.dialog.CodeDialog
 import io.legado.app.ui.widget.dialog.WaitDialog
@@ -178,10 +179,14 @@ class ImportHttpTtsDialog() : BaseDialogFragment(R.layout.dialog_recycler_view),
 
     override fun onCodeSave(code: String, requestId: String?) {
         requestId?.toInt()?.let {
-            HttpTTS.fromJson(code).getOrNull()?.let { source ->
-                viewModel.allSources[it] = source
-                adapter.setItem(it, source)
+            val source = HttpTTS.fromJson(code).getOrElse { error ->
+                throw NoStackTraceException(
+                    "ImportHttpTtsDialog code JSON is invalid for Rust analyzer handoff: " +
+                        (error.localizedMessage ?: error::class.java.name)
+                )
             }
+            viewModel.allSources[it] = source
+            adapter.setItem(it, source)
         }
     }
 }

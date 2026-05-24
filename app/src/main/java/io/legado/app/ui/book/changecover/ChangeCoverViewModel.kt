@@ -6,17 +6,17 @@ import androidx.lifecycle.MutableLiveData
 import androidx.lifecycle.viewModelScope
 import io.legado.app.base.BaseViewModel
 import io.legado.app.constant.AppConst
-import io.legado.app.constant.AppLog
 import io.legado.app.constant.AppPattern
 import io.legado.app.data.appDb
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookSource
 import io.legado.app.data.entities.BookSourcePart
 import io.legado.app.data.entities.SearchBook
+import io.legado.app.exception.NoStackTraceException
 import io.legado.app.help.config.AppConfig
 import io.legado.app.model.BookCover
 import io.legado.app.model.webBook.WebBook
-import io.legado.app.utils.mapParallelSafe
+import io.legado.app.utils.mapParallel
 import kotlinx.coroutines.Dispatchers.IO
 import kotlinx.coroutines.ExecutorCoroutineDispatcher
 import kotlinx.coroutines.Job
@@ -139,8 +139,9 @@ class ChangeCoverViewModel(application: Application) : BaseViewModel(application
                     search()
                 }
             } catch (e: Exception) {
-                AppLog.put("封面规则搜索出错\n${e.localizedMessage}", e)
-                search()
+                throw NoStackTraceException(
+                    "ChangeCover default Rust cover search failed for $name: ${e.localizedMessage ?: e}"
+                )
             }
         }
     }
@@ -155,14 +156,16 @@ class ChangeCoverViewModel(application: Application) : BaseViewModel(application
                 }
             }.onStart {
                 searchStateData.postValue(1)
-            }.mapParallelSafe(threadCount) {
+            }.mapParallel(threadCount) {
                 withTimeout(60000L) {
                     search(it)
                 }
             }.onCompletion {
                 searchStateData.postValue(0)
             }.catch {
-                AppLog.put("封面换源搜索出错\n${it.localizedMessage}", it)
+                throw NoStackTraceException(
+                    "ChangeCover source Rust cover search failed for $name: ${it.localizedMessage ?: it}"
+                )
             }.collect()
         }
     }

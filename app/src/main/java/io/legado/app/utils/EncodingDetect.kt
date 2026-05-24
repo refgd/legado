@@ -2,7 +2,7 @@ package io.legado.app.utils
 
 import android.text.TextUtils
 import io.legado.app.lib.icu4j.CharsetDetector
-import org.jsoup.Jsoup
+import io.legado.app.model.webBook.RustAnalyzerBridge
 import java.io.File
 
 /**
@@ -25,27 +25,12 @@ object EncodingDetect {
                     head = String(bytes.copyOfRange(startIndex, endIndex + headCloseBytes.size))
                 }
             }
-            val doc = Jsoup.parseBodyFragment(head ?: headTagRegex.find(String(bytes))!!.value)
-            val metaTags = doc.getElementsByTag("meta")
-            var charsetStr: String
-            for (metaTag in metaTags) {
-                charsetStr = metaTag.attr("charset")
-                if (!TextUtils.isEmpty(charsetStr)) {
-                    return charsetStr
-                }
-                val httpEquiv = metaTag.attr("http-equiv")
-                if (httpEquiv.equals("content-type", true)) {
-                    val content = metaTag.attr("content")
-                    val idx = content.indexOf("charset=", ignoreCase = true)
-                    charsetStr = if (idx > -1) {
-                        content.substring(idx + "charset=".length)
-                    } else {
-                        content.substringAfter(";")
-                    }
-                    if (!TextUtils.isEmpty(charsetStr)) {
-                        return charsetStr
-                    }
-                }
+            val charsetStr = RustAnalyzerBridge.htmlCharset(
+                head ?: headTagRegex.find(String(bytes))!!.value,
+                "EncodingDetect.getHtmlEncode"
+            )
+            if (!TextUtils.isEmpty(charsetStr)) {
+                return charsetStr
             }
         } catch (ignored: Exception) {
         }

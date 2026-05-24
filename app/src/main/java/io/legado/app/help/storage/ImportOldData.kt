@@ -111,12 +111,14 @@ object ImportOldData {
     }
 
     private fun importOldReplaceRule(json: String): Int {
-        val rules = ReplaceAnalyzer.jsonToReplaceRules(json).getOrNull()
-        rules?.let {
-            appDb.replaceRuleDao.insert(*rules.toTypedArray())
-            return rules.size
+        val rules = ReplaceAnalyzer.jsonToReplaceRules(json).getOrElse {
+            throw NoStackTraceException(
+                "ImportOldData replace rule JSON is invalid for Rust analyzer handoff: " +
+                    (it.localizedMessage ?: it::class.java.name)
+            )
         }
-        return 0
+        appDb.replaceRuleDao.insert(*rules.toTypedArray())
+        return rules.size
     }
 
     private fun fromOldBooks(json: String): List<Book> {

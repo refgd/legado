@@ -12,12 +12,11 @@ import io.legado.app.data.appDb
 import io.legado.app.exception.RegexTimeoutException
 import io.legado.app.help.RuleBigDataHelp
 import io.legado.app.help.config.AppConfig
-import io.legado.app.model.analyzeRule.AnalyzeUrl
-import io.legado.app.model.analyzeRule.RuleDataInterface
 import io.legado.app.utils.ChineseUtils
 import io.legado.app.utils.GSON
 import io.legado.app.utils.MD5Utils
 import io.legado.app.utils.NetworkUtils
+import io.legado.app.utils.UrlOptions
 import io.legado.app.utils.fromJsonObject
 import io.legado.app.utils.replace
 import io.legado.app.utils.toastOnUi
@@ -63,7 +62,7 @@ data class BookChapter(
     @delegate:Ignore
     @IgnoredOnParcel
     override val variableMap: HashMap<String, String> by lazy {
-        GSON.fromJsonObject<HashMap<String, String>>(variable).getOrNull() ?: hashMapOf()
+        parseVariableMap("BookChapter($bookUrl/$url)", variable)
     }
 
     fun putImgUrl(value: String?) {
@@ -183,7 +182,7 @@ data class BookChapter(
     fun getAbsoluteURL(): String {
         //二级目录解析的卷链接为空 返回目录页的链接
         if (url.startsWith(title) && isVolume) return baseUrl
-        val urlMatcher = AnalyzeUrl.paramPattern.matcher(url)
+        val urlMatcher = UrlOptions.paramPattern.matcher(url)
         val urlBefore = if (urlMatcher.find()) url.substring(0, urlMatcher.start()) else url
         val urlAbsoluteBefore = NetworkUtils.getAbsoluteURL(baseUrl, urlBefore)
         return if (urlBefore.length == url.length) {

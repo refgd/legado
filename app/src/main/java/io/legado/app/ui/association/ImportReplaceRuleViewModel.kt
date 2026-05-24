@@ -4,18 +4,14 @@ import android.app.Application
 import androidx.core.net.toUri
 import androidx.lifecycle.MutableLiveData
 import io.legado.app.base.BaseViewModel
-import io.legado.app.constant.AppConst
 import io.legado.app.constant.AppLog
 import io.legado.app.constant.AppPattern
 import io.legado.app.data.appDb
 import io.legado.app.data.entities.ReplaceRule
 import io.legado.app.exception.NoStackTraceException
 import io.legado.app.help.ReplaceAnalyzer
-import io.legado.app.help.http.decompressed
-import io.legado.app.help.http.newCallResponseBody
-import io.legado.app.help.http.okHttpClient
-import io.legado.app.help.http.text
 import io.legado.app.model.RuleUpdate
+import io.legado.app.utils.RustRemoteFetch
 import io.legado.app.utils.isAbsUrl
 import io.legado.app.utils.isJsonArray
 import io.legado.app.utils.isJsonObject
@@ -121,16 +117,7 @@ class ImportReplaceRuleViewModel(app: Application) : BaseViewModel(app) {
             RuleUpdate.cacheReplaceRuleMap.remove(url)
             return
         }
-        okHttpClient.newCallResponseBody {
-            if (url.endsWith("#requestWithoutUA")) {
-                url(url.substringBeforeLast("#requestWithoutUA"))
-                header(AppConst.UA_NAME, "null")
-            } else {
-                url(url)
-            }
-        }.decompressed().text("utf-8").let {
-            importAwait(it)
-        }
+        importAwait(RustRemoteFetch.text(url, "ImportReplaceRuleViewModel.importUrl"))
     }
 
     private fun comparisonSource() {

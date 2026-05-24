@@ -1,30 +1,23 @@
 package io.legado.app.data.entities
 
 import android.webkit.JavascriptInterface
-import cn.hutool.crypto.symmetric.AES
-import com.script.ScriptBindings
-import com.script.buildScriptBindings
-import com.script.rhino.RhinoScriptEngine
 import io.legado.app.constant.AppConst
-import io.legado.app.constant.AppLog
 import io.legado.app.data.entities.rule.RowUi
-import io.legado.app.help.CacheManager
+import io.legado.app.exception.NoStackTraceException
 import io.legado.app.help.ConcurrentRateLimiter.Companion.updateConcurrentRate
 import io.legado.app.help.JsExtensions
 import io.legado.app.help.config.AppConfig
-import io.legado.app.help.crypto.SymmetricCryptoAndroid
-import io.legado.app.help.http.CookieStore
 import io.legado.app.help.source.clearExploreKindsCache
-import io.legado.app.help.source.getShareScope
 import io.legado.app.model.SharedJsScope.remove
+import io.legado.app.model.webBook.RustAnalyzerBridge
 import io.legado.app.utils.GSON
-import io.legado.app.utils.GSONStrict
 import io.legado.app.utils.fromJsonArray
 import io.legado.app.utils.fromJsonObject
 import io.legado.app.utils.has
 import io.legado.app.utils.isMainThread
 import kotlinx.coroutines.runBlocking
 import org.intellij.lang.annotations.Language
+import java.io.InputStream
 
 /**
  * 可在js里调用,source.xxx()
@@ -103,27 +96,18 @@ interface BaseSource : JsExtensions {
      */
     fun getHeaderMap(hasLoginHeader: Boolean = false) = HashMap<String, String>().apply {
         header?.let {
-            try {
-                val json = when {
-                    it.startsWith("@js:", true) -> evalJS(it.substring(4)).toString()
-                    it.startsWith("<js>", true) -> evalJS(
-                        it.substring(4, it.lastIndexOf("<"))
-                    ).toString()
+            val json = when {
+                it.startsWith("@js:", true) -> evalJS(it.substring(4)).toString()
+                it.startsWith("<js>", true) -> evalJS(
+                    it.substring(4, it.lastIndexOf("<"))
+                ).toString()
 
-                    else -> it
-                }
-                if (json.isBlank()) {
-                    return@let
-                }
-                GSONStrict.fromJsonObject<Map<String, String>>(json).getOrNull()?.let { map ->
-                    putAll(map)
-                } ?: GSON.fromJsonObject<Map<String, String>>(json).getOrNull()?.let { map ->
-                    log("请求头规则 JSON 格式不规范，请改为规范格式")
-                    putAll(map)
-                }
-            } catch (e: Exception) {
-                AppLog.put("执行请求头规则出错\n$e", e)
+                else -> it
             }
+            if (json.isBlank()) {
+                return@let
+            }
+            putAll(parseHeaderRuleMap(json, "BaseSource.getHeaderMap"))
         }
         if (!has(AppConst.UA_NAME, true)) {
             put(AppConst.UA_NAME, AppConfig.userAgent)
@@ -140,48 +124,80 @@ interface BaseSource : JsExtensions {
      */
     @JavascriptInterface
     fun getLoginHeader(): String? {
-        return CacheManager.get("loginHeader_${getKey()}")
+        if (!RustAnalyzerBridge.isAvailable) {
+            error("Rust analyzer UniFFI binding is required for source.getLoginHeader")
+        }
+        return RustAnalyzerBridge.evalJs(
+            source = this,
+            script = "source.getLoginHeader()",
+            rulePath = "BaseSource.getLoginHeader"
+        ).ifBlank { null }
     }
 
     fun getLoginHeaderMap(): Map<String, String>? {
-        val cache = getLoginHeader() ?: return null
-        return GSON.fromJsonObject<Map<String, String>>(cache).getOrNull()
+        if (!RustAnalyzerBridge.isAvailable) {
+            error("Rust analyzer UniFFI binding is required for source.getLoginHeaderMap")
+        }
+        val json = RustAnalyzerBridge.evalJs(
+            source = this,
+            script = "JSON.stringify(source.getLoginHeaderMap() || {})",
+            rulePath = "BaseSource.getLoginHeaderMap"
+        )
+        return parseHeaderRuleMap(json, "BaseSource.getLoginHeaderMap")
+            .takeIf { it.isNotEmpty() }
+    }
+
+    private fun parseHeaderRuleMap(json: String, rulePath: String): Map<String, String> {
+        return GSON.fromJsonObject<Map<String, String>>(json).getOrElse {
+            throw NoStackTraceException(
+                "$rulePath header JSON is invalid for Rust analyzer handoff " +
+                    "for ${getTag()}(${getKey()}): ${json.take(300)}"
+            )
+        }
     }
 
     /**
      * 保存登录头部信息,map格式,访问时自动添加
      */
     fun putLoginHeader(header: String) {
-        val headerMap = GSON.fromJsonObject<Map<String, String>>(header).getOrNull()
-        val cookie = headerMap?.get("Cookie") ?: headerMap?.get("cookie")
-        cookie?.let {
-            CookieStore.replaceCookie(getKey(), it)
+        if (!RustAnalyzerBridge.isAvailable) {
+            error("Rust analyzer UniFFI binding is required for source.putLoginHeader")
         }
-        CacheManager.put("loginHeader_${getKey()}", header)
+        RustAnalyzerBridge.evalJs(
+            source = this,
+            script = "source.putLoginHeader(${GSON.toJson(header)})",
+            rulePath = "BaseSource.putLoginHeader"
+        )
     }
 
     fun removeLoginHeader() {
-        CacheManager.delete("loginHeader_${getKey()}")
-        CookieStore.removeCookie(getKey())
+        if (!RustAnalyzerBridge.isAvailable) {
+            error("Rust analyzer UniFFI binding is required for source.removeLoginHeader")
+        }
+        RustAnalyzerBridge.evalJs(
+            source = this,
+            script = "source.removeLoginHeader()",
+            rulePath = "BaseSource.removeLoginHeader"
+        )
     }
 
     /**
      * 获取用户信息,可以用来登录
-     * 用户信息采用aes加密存储
      */
     @JavascriptInterface
     fun getLoginInfo(): String? {
-        try {
-            val key = AppConst.androidId.encodeToByteArray(0, 16)
-            val cache = CacheManager.get("userInfo_${getKey()}") ?: return null
-            return AES(key).decryptStr(cache)
-        } catch (e: Exception) {
-            AppLog.put("获取登陆信息出错", e)
-            return null
+        if (!RustAnalyzerBridge.isAvailable) {
+            error("Rust analyzer UniFFI binding is required for source.getLoginInfo")
         }
+        val json = RustAnalyzerBridge.evalJs(
+            source = this,
+            script = "source.getLoginInfo()",
+            rulePath = "BaseSource.getLoginInfo"
+        )
+        return json.takeIf { it.isNotBlank() && it != "{}" }
     }
 
-    private fun configureScriptBindings(): ScriptBindings.() -> Unit = {
+    private fun configureDefaultEvalBindings(): RustScriptBindings.() -> Unit = {
         put("result", mutableMapOf<String, String>())
         put("book", null)
         put("chapter", null)
@@ -195,18 +211,18 @@ interface BaseSource : JsExtensions {
                 when {
                     it.startsWith("@js:") -> evalJS(
                         "${getLoginJs() ?: ""}\n${it.substring(4)}",
-                        configureScriptBindings()
+                        configureDefaultEvalBindings()
                     ).toString()
 
                     it.startsWith("<js>") -> evalJS(
                         "${getLoginJs() ?: ""}\n${it.substring(4, it.lastIndexOf("<"))}",
-                        configureScriptBindings()
+                        configureDefaultEvalBindings()
                     ).toString()
 
                     else -> it
                 }
             }
-            val longinInfo = GSON.fromJsonArray<RowUi>(loginUiJson).getOrNull()
+            val longinInfo = parseLoginUiRows(loginUiJson)
                 ?.filter { it.type != "button" }
                 ?.associate { it.name to (it.default ?: "") }
                 ?.takeIf { it.isNotEmpty() }?.also {
@@ -214,28 +230,57 @@ interface BaseSource : JsExtensions {
                 }
             return longinInfo?.toMutableMap() ?: mutableMapOf()
         }
-        return GSON.fromJsonObject<MutableMap<String, String>>(json).getOrNull() ?: mutableMapOf()
+        return parseLoginInfoMap(json)
+    }
+
+    private fun parseLoginUiRows(json: String?): List<RowUi>? {
+        if (json.isNullOrBlank()) {
+            return null
+        }
+        return GSON.fromJsonArray<RowUi>(json).getOrElse {
+            throw NoStackTraceException(
+                "BaseSource.getLoginInfoMap loginUi must return a JSON array for ${getTag()}(${getKey()}): ${json.take(300)}"
+            )
+        }
+    }
+
+    private fun parseLoginInfoMap(json: String): MutableMap<String, String> {
+        if (json.isBlank() || json == "{}") {
+            return mutableMapOf()
+        }
+        return GSON.fromJsonObject<MutableMap<String, String>>(json).getOrElse {
+            throw NoStackTraceException(
+                "BaseSource.getLoginInfoMap login info must return a JSON object for ${getTag()}(${getKey()}): ${json.take(300)}"
+            )
+        }
     }
 
     /**
-     * 保存用户信息,aes加密
+     * 保存用户信息
      */
     @JavascriptInterface
     fun putLoginInfo(info: String): Boolean {
-        return try {
-            val key = (AppConst.androidId).encodeToByteArray(0, 16)
-            val encodeStr = SymmetricCryptoAndroid("AES", key).encryptBase64(info)
-            CacheManager.put("userInfo_${getKey()}", encodeStr)
-            true
-        } catch (e: Exception) {
-            AppLog.put("保存登陆信息出错", e)
-            false
+        if (!RustAnalyzerBridge.isAvailable) {
+            error("Rust analyzer UniFFI binding is required for source.putLoginInfo")
         }
+        RustAnalyzerBridge.evalJs(
+            source = this,
+            script = "source.putLoginInfo(${GSON.toJson(info)})",
+            rulePath = "BaseSource.putLoginInfo"
+        )
+        return true
     }
 
     @JavascriptInterface
     fun removeLoginInfo() {
-        CacheManager.delete("userInfo_${getKey()}")
+        if (!RustAnalyzerBridge.isAvailable) {
+            error("Rust analyzer UniFFI binding is required for source.removeLoginInfo")
+        }
+        RustAnalyzerBridge.evalJs(
+            source = this,
+            script = "source.removeLoginInfo()",
+            rulePath = "BaseSource.removeLoginInfo"
+        )
     }
 
     /**
@@ -243,11 +288,14 @@ interface BaseSource : JsExtensions {
      * @param variable 变量内容
      */
     fun setVariable(variable: String?) {
-        if (variable != null) {
-            CacheManager.put("sourceVariable_${getKey()}", variable)
-        } else {
-            CacheManager.delete("sourceVariable_${getKey()}")
+        if (!RustAnalyzerBridge.isAvailable) {
+            error("Rust analyzer UniFFI binding is required for source.setVariable")
         }
+        RustAnalyzerBridge.evalJs(
+            source = this,
+            script = "source.setVariable(${GSON.toJson(variable ?: "")})",
+            rulePath = "BaseSource.setVariable"
+        )
     }
 
     /**
@@ -256,11 +304,14 @@ interface BaseSource : JsExtensions {
      */
     @JavascriptInterface
     fun putVariable(variable: String?) {
-        if (variable != null) {
-            CacheManager.put("sourceVariable_${getKey()}", variable)
-        } else {
-            CacheManager.delete("sourceVariable_${getKey()}")
+        if (!RustAnalyzerBridge.isAvailable) {
+            error("Rust analyzer UniFFI binding is required for source.putVariable")
         }
+        RustAnalyzerBridge.evalJs(
+            source = this,
+            script = "source.putVariable(${GSON.toJson(variable ?: "")})",
+            rulePath = "BaseSource.putVariable"
+        )
     }
 
     /**
@@ -268,7 +319,14 @@ interface BaseSource : JsExtensions {
      */
     @JavascriptInterface
     fun getVariable(): String {
-        return CacheManager.get("sourceVariable_${getKey()}") ?: ""
+        if (!RustAnalyzerBridge.isAvailable) {
+            error("Rust analyzer UniFFI binding is required for source.getVariable")
+        }
+        return RustAnalyzerBridge.evalJs(
+            source = this,
+            script = "source.getVariable()",
+            rulePath = "BaseSource.getVariable"
+        )
     }
 
     /**
@@ -276,8 +334,14 @@ interface BaseSource : JsExtensions {
      */
     @JavascriptInterface
     fun put(key: String, value: String): String {
-        CacheManager.put("v_${getKey()}_${key}", value)
-        return value
+        if (!RustAnalyzerBridge.isAvailable) {
+            error("Rust analyzer UniFFI binding is required for source.put")
+        }
+        return RustAnalyzerBridge.evalJs(
+            source = this,
+            script = "source.put(${GSON.toJson(key)}, ${GSON.toJson(value)})",
+            rulePath = "BaseSource.put"
+        )
     }
 
     /**
@@ -285,7 +349,14 @@ interface BaseSource : JsExtensions {
      */
     @JavascriptInterface
     fun get(key: String): String {
-        return CacheManager.get("v_${getKey()}_${key}") ?: ""
+        if (!RustAnalyzerBridge.isAvailable) {
+            error("Rust analyzer UniFFI binding is required for source.get")
+        }
+        return RustAnalyzerBridge.evalJs(
+            source = this,
+            script = "source.get(${GSON.toJson(key)})",
+            rulePath = "BaseSource.get"
+        )
     }
 
     /**
@@ -325,23 +396,56 @@ interface BaseSource : JsExtensions {
      * 执行JS
      */
     @Throws(Exception::class)
-    fun evalJS(jsStr: String, bindingsConfig: ScriptBindings.() -> Unit = {}): Any? {
-        val bindings = buildScriptBindings { bindings ->
-            bindings["java"] = this
-            bindings["source"] = this
-            bindings["baseUrl"] = getKey()
-            bindings["cookie"] = CookieStore
-            bindings["cache"] = CacheManager
-            bindings.apply(bindingsConfig)
+    fun evalJS(jsStr: String, bindingsConfig: RustScriptBindings.() -> Unit = {}): Any? {
+        val bindings = RustScriptBindings().apply {
+            put("java", this@BaseSource)
+            put("source", this@BaseSource)
+            put("baseUrl", getKey())
+            bindingsConfig()
         }
-        val sharedScope = getShareScope()
-        val scope = if (sharedScope == null) {
-            RhinoScriptEngine.getRuntimeScope(bindings)
-        } else {
-            bindings.apply {
-                prototype = sharedScope
-            }
-        }
-        return RhinoScriptEngine.eval(jsStr, scope)
+        val bindingsJson = bindings.toRustBindingsJson()
+        return RustAnalyzerBridge.evalJsAny(
+            source = this,
+            script = jsStr,
+            result = bindings["result"],
+            baseUrl = getKey(),
+            rulePath = "BaseSource.evalJS",
+            platformJava = bindings["java"],
+            bindingsJson = bindingsJson
+        )
     }
+}
+
+class RustScriptBindings {
+    private val values = linkedMapOf<String, Any?>()
+
+    operator fun set(key: String, value: Any?) {
+        values[key] = value
+    }
+
+    operator fun get(key: String): Any? = values[key]
+
+    fun put(key: String, value: Any?) {
+        values[key] = value
+    }
+
+    fun toRustBindingsJson(): String {
+        val reserved = setOf("java", "source", "cookie", "cache")
+        return GSON.newBuilder()
+            .serializeNulls()
+            .create()
+            .toJson(values.filterKeys { it !in reserved }.mapValues { encodeRustBindingValue(it.value) })
+    }
+}
+
+private fun encodeRustBindingValue(value: Any?): Any? {
+    return when (value) {
+        is ByteArray -> mapOf("__javaBytesHex" to value.toHexString())
+        is InputStream -> mapOf("__javaBytesHex" to value.readBytes().toHexString())
+        else -> value
+    }
+}
+
+private fun ByteArray.toHexString(): String {
+    return joinToString(separator = "") { byte -> "%02x".format(byte.toInt() and 0xff) }
 }
